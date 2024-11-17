@@ -1,12 +1,33 @@
+#nullable disable
 using System;
 
 namespace MediaBrowser.Model.Tasks
 {
     /// <summary>
-    /// Class TaskTriggerInfo
+    /// Class TaskTriggerInfo.
     /// </summary>
     public class TaskTriggerInfo
     {
+        /// <summary>
+        /// The daily trigger.
+        /// </summary>
+        public const string TriggerDaily = "DailyTrigger";
+
+        /// <summary>
+        /// The weekly trigger.
+        /// </summary>
+        public const string TriggerWeekly = "WeeklyTrigger";
+
+        /// <summary>
+        /// The interval trigger.
+        /// </summary>
+        public const string TriggerInterval = "IntervalTrigger";
+
+        /// <summary>
+        /// The startup trigger.
+        /// </summary>
+        public const string TriggerStartup = "StartupTrigger";
+
         /// <summary>
         /// Gets or sets the type.
         /// </summary>
@@ -36,11 +57,5 @@ namespace MediaBrowser.Model.Tasks
         /// </summary>
         /// <value>The maximum runtime ticks.</value>
         public long? MaxRuntimeTicks { get; set; }
-
-        public const string TriggerDaily = "DailyTrigger";
-        public const string TriggerWeekly = "WeeklyTrigger";
-        public const string TriggerInterval = "IntervalTrigger";
-        public const string TriggerSystemEvent = "SystemEventTrigger";
-        public const string TriggerStartup = "StartupTrigger";
     }
 }

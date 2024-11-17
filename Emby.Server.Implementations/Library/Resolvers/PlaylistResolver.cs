@@ -1,64 +1,78 @@
-#pragma warning disable CS1591
+#nullable disable
 
 using System;
 using System.IO;
 using System.Linq;
+using Jellyfin.Data.Enums;
+using Jellyfin.Extensions;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Playlists;
-using MediaBrowser.Model.Entities;
+using MediaBrowser.Controller.Resolvers;
+using MediaBrowser.LocalMetadata.Savers;
 
 namespace Emby.Server.Implementations.Library.Resolvers
 {
-    public class PlaylistResolver : FolderResolver<Playlist>
+    /// <summary>
+    /// <see cref="IItemResolver"/> for <see cref="Playlist"/> library items.
+    /// </summary>
+    public class PlaylistResolver : GenericFolderResolver<Playlist>
     {
-        private string[] SupportedCollectionTypes = new string[] {
+        private readonly CollectionType?[] _musicPlaylistCollectionTypes =
+        [
+            null,
+            CollectionType.music
+        ];
 
-            string.Empty,
-            CollectionType.Music
-        };
-
-        /// <summary>
-        /// Resolves the specified args.
-        /// </summary>
-        /// <param name="args">The args.</param>
-        /// <returns>BoxSet.</returns>
+        /// <inheritdoc/>
         protected override Playlist Resolve(ItemResolveArgs args)
         {
-            // It's a boxset if all of the following conditions are met:
-            // Is a Directory
-            // Contains [playlist] in the path
             if (args.IsDirectory)
             {
-                var filename = Path.GetFileName(args.Path);
-
+                // It's a boxset if the path is a directory with [playlist] in its name
+                var filename = Path.GetFileName(Path.TrimEndingDirectorySeparator(args.Path));
                 if (string.IsNullOrEmpty(filename))
                 {
                     return null;
                 }
 
-                if (filename.IndexOf("[playlist]", StringComparison.OrdinalIgnoreCase) != -1)
+                if (filename.Contains("[playlist]", StringComparison.OrdinalIgnoreCase))
                 {
                     return new Playlist
                     {
                         Path = args.Path,
-                        Name = Path.GetFileName(args.Path).Replace("[playlist]", string.Empty, StringComparison.OrdinalIgnoreCase).Trim()
+                        Name = filename.Replace("[playlist]", string.Empty, StringComparison.OrdinalIgnoreCase).Trim(),
+                        OpenAccess = true
+                    };
+                }
+
+                // It's a directory-based playlist if the directory contains a playlist file
+                var filePaths = Directory.EnumerateFiles(args.Path, "*", new EnumerationOptions { IgnoreInaccessible = true });
+                if (filePaths.Any(f => f.EndsWith(PlaylistXmlSaver.DefaultPlaylistFilename, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return new Playlist
+                    {
+                        Path = args.Path,
+                        Name = filename,
+                        OpenAccess = true
                     };
                 }
             }
-            else
+
+            // Check if this is a music playlist file
+            // It should have the correct collection type and a supported file extension
+            else if (_musicPlaylistCollectionTypes.Contains(args.CollectionType))
             {
-                if (SupportedCollectionTypes.Contains(args.CollectionType ?? string.Empty, StringComparer.OrdinalIgnoreCase))
+                var extension = Path.GetExtension(args.Path.AsSpan());
+                if (Playlist.SupportedExtensions.Contains(extension, StringComparison.OrdinalIgnoreCase))
                 {
-                    var extension = Path.GetExtension(args.Path);
-                    if (Playlist.SupportedExtensions.Contains(extension ?? string.Empty, StringComparer.OrdinalIgnoreCase))
+                    return new Playlist
                     {
-                        return new Playlist
-                        {
-                            Path = args.Path,
-                            Name = Path.GetFileNameWithoutExtension(args.Path),
-                            IsInMixedFolder = true
-                        };
-                    }
+                        Path = args.Path,
+                        Name = Path.GetFileNameWithoutExtension(args.Path),
+                        IsInMixedFolder = true,
+                        PlaylistMediaType = MediaType.Audio,
+                        OpenAccess = true
+                    };
                 }
             }
 

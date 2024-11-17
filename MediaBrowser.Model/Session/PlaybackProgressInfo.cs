@@ -1,3 +1,6 @@
+#nullable disable
+#pragma warning disable CS1591
+
 using System;
 using MediaBrowser.Model.Dto;
 
@@ -85,36 +88,33 @@ namespace MediaBrowser.Model.Session
         /// </summary>
         /// <value>The play method.</value>
         public PlayMethod PlayMethod { get; set; }
+
         /// <summary>
         /// Gets or sets the live stream identifier.
         /// </summary>
         /// <value>The live stream identifier.</value>
         public string LiveStreamId { get; set; }
+
         /// <summary>
         /// Gets or sets the play session identifier.
         /// </summary>
         /// <value>The play session identifier.</value>
         public string PlaySessionId { get; set; }
+
         /// <summary>
         /// Gets or sets the repeat mode.
         /// </summary>
         /// <value>The repeat mode.</value>
         public RepeatMode RepeatMode { get; set; }
 
+        /// <summary>
+        /// Gets or sets the playback order.
+        /// </summary>
+        /// <value>The playback order.</value>
+        public PlaybackOrder PlaybackOrder { get; set; }
+
         public QueueItem[] NowPlayingQueue { get; set; }
-        public string PlaylistItemId { get; set; }
-    }
 
-    public enum RepeatMode
-    {
-        RepeatNone = 0,
-        RepeatAll = 1,
-        RepeatOne = 2
-    }
-
-    public class QueueItem
-    {
-        public Guid Id { get; set; }
         public string PlaylistItemId { get; set; }
     }
 }

@@ -9,7 +9,7 @@ using MediaBrowser.Model.IO;
 namespace Emby.Server.Implementations.Library
 {
     /// <summary>
-    /// Class ResolverHelper
+    /// Class ResolverHelper.
     /// </summary>
     public static class ResolverHelper
     {
@@ -18,34 +18,38 @@ namespace Emby.Server.Implementations.Library
         /// </summary>
         /// <param name="item">The item.</param>
         /// <param name="parent">The parent.</param>
-        /// <param name="fileSystem">The file system.</param>
         /// <param name="libraryManager">The library manager.</param>
         /// <param name="directoryService">The directory service.</param>
-        /// <exception cref="ArgumentException">Item must have a path</exception>
-        public static void SetInitialItemValues(BaseItem item, Folder parent, IFileSystem fileSystem, ILibraryManager libraryManager, IDirectoryService directoryService)
+        /// <returns>True if initializing was successful.</returns>
+        /// <exception cref="ArgumentException">Item must have a path.</exception>
+        public static bool SetInitialItemValues(BaseItem item, Folder? parent, ILibraryManager libraryManager, IDirectoryService directoryService)
         {
             // This version of the below method has no ItemResolveArgs, so we have to require the path already being set
-            if (string.IsNullOrEmpty(item.Path))
-            {
-                throw new ArgumentException("Item must have a Path");
-            }
+            ArgumentException.ThrowIfNullOrEmpty(item.Path);
 
             // If the resolver didn't specify this
-            if (parent != null)
+            if (parent is not null)
             {
                 item.SetParent(parent);
             }
 
             item.Id = libraryManager.GetNewItemId(item.Path, item.GetType());
 
-            item.IsLocked = item.Path.IndexOf("[dontfetchmeta]", StringComparison.OrdinalIgnoreCase) != -1 ||
+            item.IsLocked = item.Path.Contains("[dontfetchmeta]", StringComparison.OrdinalIgnoreCase) ||
                 item.GetParents().Any(i => i.IsLocked);
 
             // Make sure DateCreated and DateModified have values
-            var fileInfo = directoryService.GetFile(item.Path);
-            SetDateCreated(item, fileSystem, fileInfo);
+            var fileInfo = directoryService.GetFileSystemEntry(item.Path);
+            if (fileInfo is null)
+            {
+                return false;
+            }
 
-            EnsureName(item, item.Path, fileInfo);
+            SetDateCreated(item, fileInfo);
+
+            EnsureName(item, fileInfo);
+
+            return true;
         }
 
         /// <summary>
@@ -64,7 +68,7 @@ namespace Emby.Server.Implementations.Library
             }
 
             // If the resolver didn't specify this
-            if (args.Parent != null)
+            if (args.Parent is not null)
             {
                 item.SetParent(args.Parent);
             }
@@ -72,9 +76,9 @@ namespace Emby.Server.Implementations.Library
             item.Id = libraryManager.GetNewItemId(item.Path, item.GetType());
 
             // Make sure the item has a name
-            EnsureName(item, item.Path, args.FileInfo);
+            EnsureName(item, args.FileInfo);
 
-            item.IsLocked = item.Path.IndexOf("[dontfetchmeta]", StringComparison.OrdinalIgnoreCase) != -1 ||
+            item.IsLocked = item.Path.Contains("[dontfetchmeta]", StringComparison.OrdinalIgnoreCase) ||
                 item.GetParents().Any(i => i.IsLocked);
 
             // Make sure DateCreated and DateModified have values
@@ -84,57 +88,31 @@ namespace Emby.Server.Implementations.Library
         /// <summary>
         /// Ensures the name.
         /// </summary>
-        private static void EnsureName(BaseItem item, string fullPath, FileSystemMetadata fileInfo)
+        private static void EnsureName(BaseItem item, FileSystemMetadata fileInfo)
         {
             // If the subclass didn't supply a name, add it here
-            if (string.IsNullOrEmpty(item.Name) && !string.IsNullOrEmpty(fullPath))
+            if (string.IsNullOrEmpty(item.Name) && !string.IsNullOrEmpty(item.Path))
             {
-                var fileName = fileInfo == null ? Path.GetFileName(fullPath) : fileInfo.Name;
-
-                item.Name = GetDisplayName(fileName, fileInfo != null && fileInfo.IsDirectory);
+                item.Name = fileInfo.IsDirectory ? fileInfo.Name : Path.GetFileNameWithoutExtension(fileInfo.Name);
             }
         }
 
         /// <summary>
-        /// Gets the display name.
-        /// </summary>
-        /// <param name="path">The path.</param>
-        /// <param name="isDirectory">if set to <c>true</c> [is directory].</param>
-        /// <returns>System.String.</returns>
-        private static string GetDisplayName(string path, bool isDirectory)
-        {
-            return isDirectory ? Path.GetFileName(path) : Path.GetFileNameWithoutExtension(path);
-        }
-
-        /// <summary>
-        /// Ensures DateCreated and DateModified have values
+        /// Ensures DateCreated and DateModified have values.
         /// </summary>
         /// <param name="fileSystem">The file system.</param>
         /// <param name="item">The item.</param>
         /// <param name="args">The args.</param>
         private static void EnsureDates(IFileSystem fileSystem, BaseItem item, ItemResolveArgs args)
         {
-            if (fileSystem == null)
-            {
-                throw new ArgumentNullException(nameof(fileSystem));
-            }
-            if (item == null)
-            {
-                throw new ArgumentNullException(nameof(item));
-            }
-            if (args == null)
-            {
-                throw new ArgumentNullException(nameof(args));
-            }
-
             // See if a different path came out of the resolver than what went in
             if (!fileSystem.AreEqual(args.Path, item.Path))
             {
                 var childData = args.IsDirectory ? args.GetFileSystemEntryByPath(item.Path) : null;
 
-                if (childData != null)
+                if (childData is not null)
                 {
-                    SetDateCreated(item, fileSystem, childData);
+                    SetDateCreated(item, childData);
                 }
                 else
                 {
@@ -142,26 +120,26 @@ namespace Emby.Server.Implementations.Library
 
                     if (fileData.Exists)
                     {
-                        SetDateCreated(item, fileSystem, fileData);
+                        SetDateCreated(item, fileData);
                     }
                 }
             }
             else
             {
-                SetDateCreated(item, fileSystem, args.FileInfo);
+                SetDateCreated(item, args.FileInfo);
             }
         }
 
-        private static void SetDateCreated(BaseItem item, IFileSystem fileSystem, FileSystemMetadata info)
+        private static void SetDateCreated(BaseItem item, FileSystemMetadata? info)
         {
             var config = BaseItem.ConfigurationManager.GetMetadataConfiguration();
 
             if (config.UseFileCreationTimeForDateAdded)
             {
                 // directoryService.getFile may return null
-                if (info != null)
+                if (info is not null)
                 {
-                    var dateCreated = fileSystem.GetCreationTimeUtc(info);
+                    var dateCreated = info.CreationTimeUtc;
 
                     if (dateCreated.Equals(DateTime.MinValue))
                     {

@@ -1,3 +1,7 @@
+#nullable disable
+
+using Jellyfin.Data.Entities;
+using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Sorting;
@@ -6,7 +10,7 @@ using MediaBrowser.Model.Querying;
 namespace Emby.Server.Implementations.Sorting
 {
     /// <summary>
-    /// Class PlayCountComparer
+    /// Class PlayCountComparer.
     /// </summary>
     public class PlayCountComparer : IUserBaseItemComparer
     {
@@ -15,6 +19,24 @@ namespace Emby.Server.Implementations.Sorting
         /// </summary>
         /// <value>The user.</value>
         public User User { get; set; }
+
+        /// <summary>
+        /// Gets the name.
+        /// </summary>
+        /// <value>The name.</value>
+        public ItemSortBy Type => ItemSortBy.PlayCount;
+
+        /// <summary>
+        /// Gets or sets the user data repository.
+        /// </summary>
+        /// <value>The user data repository.</value>
+        public IUserDataManager UserDataRepository { get; set; }
+
+        /// <summary>
+        /// Gets or sets the user manager.
+        /// </summary>
+        /// <value>The user manager.</value>
+        public IUserManager UserManager { get; set; }
 
         /// <summary>
         /// Compares the specified x.
@@ -36,25 +58,7 @@ namespace Emby.Server.Implementations.Sorting
         {
             var userdata = UserDataRepository.GetUserData(User, x);
 
-            return userdata == null ? 0 : userdata.PlayCount;
+            return userdata is null ? 0 : userdata.PlayCount;
         }
-
-        /// <summary>
-        /// Gets the name.
-        /// </summary>
-        /// <value>The name.</value>
-        public string Name => ItemSortBy.PlayCount;
-
-        /// <summary>
-        /// Gets or sets the user data repository.
-        /// </summary>
-        /// <value>The user data repository.</value>
-        public IUserDataManager UserDataRepository { get; set; }
-
-        /// <summary>
-        /// Gets or sets the user manager.
-        /// </summary>
-        /// <value>The user manager.</value>
-        public IUserManager UserManager { get; set; }
     }
 }

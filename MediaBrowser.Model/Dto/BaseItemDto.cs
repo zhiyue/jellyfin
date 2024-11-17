@@ -1,5 +1,10 @@
+#nullable disable
+#pragma warning disable CS1591
+
 using System;
 using System.Collections.Generic;
+using Jellyfin.Data.Entities;
+using Jellyfin.Data.Enums;
 using MediaBrowser.Model.Drawing;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Library;
@@ -59,23 +64,26 @@ namespace MediaBrowser.Model.Dto
         public DateTime? DateCreated { get; set; }
 
         public DateTime? DateLastMediaAdded { get; set; }
-        public string ExtraType { get; set; }
+
+        public ExtraType? ExtraType { get; set; }
 
         public int? AirsBeforeSeasonNumber { get; set; }
+
         public int? AirsAfterSeasonNumber { get; set; }
+
         public int? AirsBeforeEpisodeNumber { get; set; }
+
         public bool? CanDelete { get; set; }
+
         public bool? CanDownload { get; set; }
+
+        public bool? HasLyrics { get; set; }
 
         public bool? HasSubtitles { get; set; }
 
         public string PreferredMetadataLanguage { get; set; }
-        public string PreferredMetadataCountryCode { get; set; }
 
-        /// <summary>
-        /// Gets or sets a value indicating whether [supports synchronize].
-        /// </summary>
-        public bool? SupportsSync { get; set; }
+        public string PreferredMetadataCountryCode { get; set; }
 
         public string Container { get; set; }
 
@@ -84,6 +92,7 @@ namespace MediaBrowser.Model.Dto
         /// </summary>
         /// <value>The name of the sort.</value>
         public string SortName { get; set; }
+
         public string ForcedSortName { get; set; }
 
         /// <summary>
@@ -142,7 +151,8 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets the channel identifier.
         /// </summary>
         /// <value>The channel identifier.</value>
-        public Guid ChannelId { get; set; }
+        public Guid? ChannelId { get; set; }
+
         public string ChannelName { get; set; }
 
         /// <summary>
@@ -210,6 +220,7 @@ namespace MediaBrowser.Model.Dto
         /// </summary>
         /// <value>The number.</value>
         public string Number { get; set; }
+
         public string ChannelNumber { get; set; }
 
         /// <summary>
@@ -258,13 +269,13 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets the parent id.
         /// </summary>
         /// <value>The parent id.</value>
-        public Guid ParentId { get; set; }
+        public Guid? ParentId { get; set; }
 
         /// <summary>
         /// Gets or sets the type.
         /// </summary>
         /// <value>The type.</value>
-        public string Type { get; set; }
+        public BaseItemKind Type { get; set; }
 
         /// <summary>
         /// Gets or sets the people.
@@ -281,16 +292,16 @@ namespace MediaBrowser.Model.Dto
         public NameGuidPair[] GenreItems { get; set; }
 
         /// <summary>
-        /// If the item does not have a logo, this will hold the Id of the Parent that has one.
+        /// Gets or sets whether the item has a logo, this will hold the Id of the Parent that has one.
         /// </summary>
         /// <value>The parent logo item id.</value>
-        public string ParentLogoItemId { get; set; }
+        public Guid? ParentLogoItemId { get; set; }
 
         /// <summary>
-        /// If the item does not have any backdrops, this will hold the Id of the Parent that has one.
+        /// Gets or sets whether the item has any backdrops, this will hold the Id of the Parent that has one.
         /// </summary>
         /// <value>The parent backdrop item id.</value>
-        public string ParentBackdropItemId { get; set; }
+        public Guid? ParentBackdropItemId { get; set; }
 
         /// <summary>
         /// Gets or sets the parent backdrop image tags.
@@ -305,7 +316,7 @@ namespace MediaBrowser.Model.Dto
         public int? LocalTrailerCount { get; set; }
 
         /// <summary>
-        /// User data for this item based on the user it's being requested for
+        /// Gets or sets the user data for this item based on the user it's being requested for.
         /// </summary>
         /// <value>The user data.</value>
         public UserItemDataDto UserData { get; set; }
@@ -332,13 +343,13 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets the series id.
         /// </summary>
         /// <value>The series id.</value>
-        public Guid SeriesId { get; set; }
+        public Guid? SeriesId { get; set; }
 
         /// <summary>
         /// Gets or sets the season identifier.
         /// </summary>
         /// <value>The season identifier.</value>
-        public Guid SeasonId { get; set; }
+        public Guid? SeasonId { get; set; }
 
         /// <summary>
         /// Gets or sets the special feature count.
@@ -404,7 +415,7 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets the type of the collection.
         /// </summary>
         /// <value>The type of the collection.</value>
-        public string CollectionType { get; set; }
+        public CollectionType? CollectionType { get; set; }
 
         /// <summary>
         /// Gets or sets the display order.
@@ -416,7 +427,8 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets the album id.
         /// </summary>
         /// <value>The album id.</value>
-        public Guid AlbumId { get; set; }
+        public Guid? AlbumId { get; set; }
+
         /// <summary>
         /// Gets or sets the album image tag.
         /// </summary>
@@ -464,6 +476,7 @@ namespace MediaBrowser.Model.Dto
         /// </summary>
         /// <value>The part count.</value>
         public int? PartCount { get; set; }
+
         public int? MediaSourceCount { get; set; }
 
         /// <summary>
@@ -491,10 +504,10 @@ namespace MediaBrowser.Model.Dto
         public string ParentLogoImageTag { get; set; }
 
         /// <summary>
-        /// If the item does not have a art, this will hold the Id of the Parent that has one.
+        /// Gets or sets whether the item has fan art, this will hold the Id of the Parent that has one.
         /// </summary>
         /// <value>The parent art item id.</value>
-        public string ParentArtItemId { get; set; }
+        public Guid? ParentArtItemId { get; set; }
 
         /// <summary>
         /// Gets or sets the parent art image tag.
@@ -509,6 +522,13 @@ namespace MediaBrowser.Model.Dto
         public string SeriesThumbImageTag { get; set; }
 
         /// <summary>
+        /// Gets or sets the blurhashes for the image tags.
+        /// Maps image type to dictionary mapping image tag to blurhash value.
+        /// </summary>
+        /// <value>The blurhashes.</value>
+        public Dictionary<ImageType, Dictionary<string, string>> ImageBlurHashes { get; set; }
+
+        /// <summary>
         /// Gets or sets the series studio.
         /// </summary>
         /// <value>The series studio.</value>
@@ -518,7 +538,7 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets the parent thumb item id.
         /// </summary>
         /// <value>The parent thumb item id.</value>
-        public string ParentThumbItemId { get; set; }
+        public Guid? ParentThumbItemId { get; set; }
 
         /// <summary>
         /// Gets or sets the parent thumb image tag.
@@ -545,6 +565,12 @@ namespace MediaBrowser.Model.Dto
         public List<ChapterInfo> Chapters { get; set; }
 
         /// <summary>
+        /// Gets or sets the trickplay manifest.
+        /// </summary>
+        /// <value>The trickplay manifest.</value>
+        public Dictionary<string, Dictionary<int, TrickplayInfo>> Trickplay { get; set; }
+
+        /// <summary>
         /// Gets or sets the type of the location.
         /// </summary>
         /// <value>The type of the location.</value>
@@ -560,7 +586,7 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets the type of the media.
         /// </summary>
         /// <value>The type of the media.</value>
-        public string MediaType { get; set; }
+        public MediaType MediaType { get; set; }
 
         /// <summary>
         /// Gets or sets the end date.
@@ -572,40 +598,48 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets the locked fields.
         /// </summary>
         /// <value>The locked fields.</value>
-        public MetadataFields[] LockedFields { get; set; }
+        public MetadataField[] LockedFields { get; set; }
 
         /// <summary>
         /// Gets or sets the trailer count.
         /// </summary>
         /// <value>The trailer count.</value>
         public int? TrailerCount { get; set; }
+
         /// <summary>
         /// Gets or sets the movie count.
         /// </summary>
         /// <value>The movie count.</value>
         public int? MovieCount { get; set; }
+
         /// <summary>
         /// Gets or sets the series count.
         /// </summary>
         /// <value>The series count.</value>
         public int? SeriesCount { get; set; }
+
         public int? ProgramCount { get; set; }
+
         /// <summary>
         /// Gets or sets the episode count.
         /// </summary>
         /// <value>The episode count.</value>
         public int? EpisodeCount { get; set; }
+
         /// <summary>
         /// Gets or sets the song count.
         /// </summary>
         /// <value>The song count.</value>
         public int? SongCount { get; set; }
+
         /// <summary>
         /// Gets or sets the album count.
         /// </summary>
         /// <value>The album count.</value>
         public int? AlbumCount { get; set; }
+
         public int? ArtistCount { get; set; }
+
         /// <summary>
         /// Gets or sets the music video count.
         /// </summary>
@@ -619,18 +653,31 @@ namespace MediaBrowser.Model.Dto
         public bool? LockData { get; set; }
 
         public int? Width { get; set; }
+
         public int? Height { get; set; }
+
         public string CameraMake { get; set; }
+
         public string CameraModel { get; set; }
+
         public string Software { get; set; }
+
         public double? ExposureTime { get; set; }
+
         public double? FocalLength { get; set; }
+
         public ImageOrientation? ImageOrientation { get; set; }
+
         public double? Aperture { get; set; }
+
         public double? ShutterSpeed { get; set; }
+
         public double? Latitude { get; set; }
+
         public double? Longitude { get; set; }
+
         public double? Altitude { get; set; }
+
         public int? IsoSpeedRating { get; set; }
 
         /// <summary>
@@ -652,7 +699,7 @@ namespace MediaBrowser.Model.Dto
         public string ChannelPrimaryImageTag { get; set; }
 
         /// <summary>
-        /// The start date of the recording, in UTC.
+        /// Gets or sets the start date of the recording, in UTC.
         /// </summary>
         public DateTime? StartDate { get; set; }
 
@@ -733,6 +780,13 @@ namespace MediaBrowser.Model.Dto
         /// </summary>
         /// <value>The timer identifier.</value>
         public string TimerId { get; set; }
+
+        /// <summary>
+        /// Gets or sets the gain required for audio normalization.
+        /// </summary>
+        /// <value>The gain required for audio normalization.</value>
+        public float? NormalizationGain { get; set; }
+
         /// <summary>
         /// Gets or sets the current program.
         /// </summary>

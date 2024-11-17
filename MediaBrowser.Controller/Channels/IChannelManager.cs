@@ -1,3 +1,7 @@
+#nullable disable
+
+#pragma warning disable CS1591
+
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -12,17 +16,11 @@ namespace MediaBrowser.Controller.Channels
     public interface IChannelManager
     {
         /// <summary>
-        /// Adds the parts.
-        /// </summary>
-        /// <param name="channels">The channels.</param>
-        void AddParts(IEnumerable<IChannel> channels);
-
-        /// <summary>
         /// Gets the channel features.
         /// </summary>
         /// <param name="id">The identifier.</param>
         /// <returns>ChannelFeatures.</returns>
-        ChannelFeatures GetChannelFeatures(string id);
+        ChannelFeatures GetChannelFeatures(Guid? id);
 
         /// <summary>
         /// Gets all channel features.
@@ -31,6 +29,7 @@ namespace MediaBrowser.Controller.Channels
         ChannelFeatures[] GetAllChannelFeatures();
 
         bool EnableMediaSourceDisplay(BaseItem item);
+
         bool CanDelete(BaseItem item);
 
         Task DeleteItem(BaseItem item);
@@ -46,32 +45,47 @@ namespace MediaBrowser.Controller.Channels
         /// Gets the channels internal.
         /// </summary>
         /// <param name="query">The query.</param>
-        QueryResult<Channel> GetChannelsInternal(ChannelQuery query);
+        /// <returns>The channels.</returns>
+        Task<QueryResult<Channel>> GetChannelsInternalAsync(ChannelQuery query);
 
         /// <summary>
         /// Gets the channels.
         /// </summary>
         /// <param name="query">The query.</param>
-        QueryResult<BaseItemDto> GetChannels(ChannelQuery query);
+        /// <returns>The channels.</returns>
+        Task<QueryResult<BaseItemDto>> GetChannelsAsync(ChannelQuery query);
 
         /// <summary>
-        /// Gets the latest media.
+        /// Gets the latest channel items.
         /// </summary>
+        /// <param name="query">The item query.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The latest channels.</returns>
         Task<QueryResult<BaseItemDto>> GetLatestChannelItems(InternalItemsQuery query, CancellationToken cancellationToken);
 
         /// <summary>
-        /// Gets the latest media.
+        /// Gets the latest channel items.
         /// </summary>
+        /// <param name="query">The item query.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The latest channels.</returns>
         Task<QueryResult<BaseItem>> GetLatestChannelItemsInternal(InternalItemsQuery query, CancellationToken cancellationToken);
 
         /// <summary>
         /// Gets the channel items.
         /// </summary>
+        /// <param name="query">The query.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The channel items.</returns>
         Task<QueryResult<BaseItemDto>> GetChannelItems(InternalItemsQuery query, CancellationToken cancellationToken);
 
         /// <summary>
-        /// Gets the channel items internal.
+        /// Gets the channel items.
         /// </summary>
+        /// <param name="query">The query.</param>
+        /// <param name="progress">The progress to report to.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The channel items.</returns>
         Task<QueryResult<BaseItem>> GetChannelItemsInternal(InternalItemsQuery query, IProgress<double> progress, CancellationToken cancellationToken);
 
         /// <summary>
@@ -79,9 +93,7 @@ namespace MediaBrowser.Controller.Channels
         /// </summary>
         /// <param name="item">The item.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>Task{IEnumerable{MediaSourceInfo}}.</returns>
+        /// <returns>The item media sources.</returns>
         IEnumerable<MediaSourceInfo> GetStaticMediaSources(BaseItem item, CancellationToken cancellationToken);
-
-        bool EnableMediaProbe(BaseItem item);
     }
 }

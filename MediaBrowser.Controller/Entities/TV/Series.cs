@@ -1,3 +1,7 @@
+#nullable disable
+
+#pragma warning disable CS1591
+
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -5,30 +9,29 @@ using System.Linq;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Entities;
+using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Providers;
-using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Providers;
 using MediaBrowser.Model.Querying;
-using MediaBrowser.Model.Users;
+using MetadataProvider = MediaBrowser.Model.Entities.MetadataProvider;
 
 namespace MediaBrowser.Controller.Entities.TV
 {
     /// <summary>
-    /// Class Series
+    /// Class Series.
     /// </summary>
     public class Series : Folder, IHasTrailers, IHasDisplayOrder, IHasLookupInfo<SeriesInfo>, IMetadataContainer
     {
         public Series()
         {
-            RemoteTrailers = Array.Empty<MediaUrl>();
-            LocalTrailerIds = Array.Empty<Guid>();
-            RemoteTrailerIds = Array.Empty<Guid>();
             AirDays = Array.Empty<DayOfWeek>();
         }
 
         public DayOfWeek[] AirDays { get; set; }
+
         public string AirTime { get; set; }
 
         [JsonIgnore]
@@ -47,14 +50,17 @@ namespace MediaBrowser.Controller.Entities.TV
         public override bool SupportsPeople => true;
 
         /// <inheritdoc />
-        public IReadOnlyList<Guid> LocalTrailerIds { get; set; }
-
-        /// <inheritdoc />
-        public IReadOnlyList<Guid> RemoteTrailerIds { get; set; }
+        [JsonIgnore]
+        public IReadOnlyList<BaseItem> LocalTrailers => GetExtras()
+            .Where(extra => extra.ExtraType == Model.Entities.ExtraType.Trailer)
+            .ToArray();
 
         /// <summary>
-        /// airdate, dvd or absolute
+        /// Gets or sets the display order.
         /// </summary>
+        /// <remarks>
+        /// Valid options are airdate, dvd or absolute.
+        /// </remarks>
         public string DisplayOrder { get; set; }
 
         /// <summary>
@@ -103,7 +109,7 @@ namespace MediaBrowser.Controller.Entities.TV
                 return key;
             }
 
-            return key + "-" + string.Join("-", folders);
+            return key + "-" + string.Join('-', folders);
         }
 
         private static string GetUniqueSeriesKey(BaseItem series)
@@ -119,7 +125,7 @@ namespace MediaBrowser.Controller.Entities.TV
             {
                 AncestorWithPresentationUniqueKey = null,
                 SeriesPresentationUniqueKey = seriesKey,
-                IncludeItemTypes = new[] { typeof(Season).Name },
+                IncludeItemTypes = new[] { BaseItemKind.Season },
                 IsVirtualItem = false,
                 Limit = 0,
                 DtoOptions = new DtoOptions(false)
@@ -147,8 +153,9 @@ namespace MediaBrowser.Controller.Entities.TV
 
             if (query.IncludeItemTypes.Length == 0)
             {
-                query.IncludeItemTypes = new[] { typeof(Episode).Name };
+                query.IncludeItemTypes = new[] { BaseItemKind.Episode };
             }
+
             query.IsVirtualItem = false;
             query.Limit = 0;
             var totalRecordCount = LibraryManager.GetCount(query);
@@ -164,14 +171,17 @@ namespace MediaBrowser.Controller.Entities.TV
         {
             var list = base.GetUserDataKeys();
 
-            var key = this.GetProviderId(MetadataProviders.Imdb);
-            if (!string.IsNullOrEmpty(key))
+            if (this.TryGetProviderId(MetadataProvider.Imdb, out var key))
             {
                 list.Insert(0, key);
             }
 
-            key = this.GetProviderId(MetadataProviders.Tvdb);
-            if (!string.IsNullOrEmpty(key))
+            if (this.TryGetProviderId(MetadataProvider.Tvdb, out key))
+            {
+                list.Insert(0, key);
+            }
+
+            if (this.TryGetProviderId(MetadataProvider.Custom, out key))
             {
                 list.Insert(0, key);
             }
@@ -202,17 +212,12 @@ namespace MediaBrowser.Controller.Entities.TV
 
             query.AncestorWithPresentationUniqueKey = null;
             query.SeriesPresentationUniqueKey = seriesKey;
-            query.IncludeItemTypes = new[] { typeof(Season).Name };
-            query.OrderBy = new[] { ItemSortBy.SortName }.Select(i => new ValueTuple<string, SortOrder>(i, SortOrder.Ascending)).ToArray();
+            query.IncludeItemTypes = new[] { BaseItemKind.Season };
+            query.OrderBy = new[] { (ItemSortBy.SortName, SortOrder.Ascending) };
 
-            if (user != null)
+            if (user is not null && !user.DisplayMissingEpisodes)
             {
-                var config = user.Configuration;
-
-                if (!config.DisplayMissingEpisodes)
-                {
-                    query.IsMissing = false;
-                }
+                query.IsMissing = false;
             }
         }
 
@@ -228,12 +233,12 @@ namespace MediaBrowser.Controller.Entities.TV
                 query.SeriesPresentationUniqueKey = seriesKey;
                 if (query.OrderBy.Count == 0)
                 {
-                    query.OrderBy = new[] { ItemSortBy.SortName }.Select(i => new ValueTuple<string, SortOrder>(i, SortOrder.Ascending)).ToArray();
+                    query.OrderBy = new[] { (ItemSortBy.SortName, SortOrder.Ascending) };
                 }
 
                 if (query.IncludeItemTypes.Length == 0)
                 {
-                    query.IncludeItemTypes = new[] { typeof(Episode).Name, typeof(Season).Name };
+                    query.IncludeItemTypes = new[] { BaseItemKind.Episode, BaseItemKind.Season };
                 }
 
                 query.IsVirtualItem = false;
@@ -245,7 +250,7 @@ namespace MediaBrowser.Controller.Entities.TV
             return LibraryManager.GetItemsResult(query);
         }
 
-        public IEnumerable<BaseItem> GetEpisodes(User user, DtoOptions options)
+        public IEnumerable<BaseItem> GetEpisodes(User user, DtoOptions options, bool shouldIncludeMissingEpisodes)
         {
             var seriesKey = GetUniqueSeriesKey(this);
 
@@ -253,12 +258,12 @@ namespace MediaBrowser.Controller.Entities.TV
             {
                 AncestorWithPresentationUniqueKey = null,
                 SeriesPresentationUniqueKey = seriesKey,
-                IncludeItemTypes = new[] { typeof(Episode).Name, typeof(Season).Name },
-                OrderBy = new[] { ItemSortBy.SortName }.Select(i => new ValueTuple<string, SortOrder>(i, SortOrder.Ascending)).ToArray(),
-                DtoOptions = options
+                IncludeItemTypes = new[] { BaseItemKind.Episode, BaseItemKind.Season },
+                OrderBy = new[] { (ItemSortBy.SortName, SortOrder.Ascending) },
+                DtoOptions = options,
             };
-            var config = user.Configuration;
-            if (!config.DisplayMissingEpisodes)
+
+            if (!shouldIncludeMissingEpisodes)
             {
                 query.IsMissing = false;
             }
@@ -268,20 +273,19 @@ namespace MediaBrowser.Controller.Entities.TV
             var allSeriesEpisodes = allItems.OfType<Episode>().ToList();
 
             var allEpisodes = allItems.OfType<Season>()
-                .SelectMany(i => i.GetEpisodes(this, user, allSeriesEpisodes, options))
+                .SelectMany(i => i.GetEpisodes(this, user, allSeriesEpisodes, options, shouldIncludeMissingEpisodes))
                 .Reverse();
 
             // Specials could appear twice based on above - once in season 0, once in the aired season
             // This depends on settings for that series
             // When this happens, remove the duplicate from season 0
 
-            return allEpisodes.GroupBy(i => i.Id).Select(x => x.First()).Reverse();
+            return allEpisodes.DistinctBy(i => i.Id).Reverse();
         }
 
         public async Task RefreshAllMetadata(MetadataRefreshOptions refreshOptions, IProgress<double> progress, CancellationToken cancellationToken)
         {
-            // Refresh bottom up, children first, then the boxset
-            // By then hopefully the  movies within will have Tmdb collection values
+            // Refresh bottom up, seasons and episodes first, then the series
             var items = GetRecursiveChildren();
 
             var totalItems = items.Count;
@@ -290,7 +294,7 @@ namespace MediaBrowser.Controller.Entities.TV
             // Refresh seasons
             foreach (var item in items)
             {
-                if (!(item is Season))
+                if (item is not Season)
                 {
                     continue;
                 }
@@ -311,27 +315,20 @@ namespace MediaBrowser.Controller.Entities.TV
             // Refresh episodes and other children
             foreach (var item in items)
             {
-                if ((item is Season))
+                if (item is Season)
                 {
                     continue;
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var skipItem = false;
-
-                var episode = item as Episode;
-
-                if (episode != null
+                bool skipItem = item is Episode episode
                     && refreshOptions.MetadataRefreshMode != MetadataRefreshMode.FullRefresh
                     && !refreshOptions.ReplaceAllMetadata
                     && episode.IsMissingEpisode
                     && episode.LocationType == LocationType.Virtual
                     && episode.PremiereDate.HasValue
-                    && (DateTime.UtcNow - episode.PremiereDate.Value).TotalDays > 30)
-                {
-                    skipItem = true;
-                }
+                    && (DateTime.UtcNow - episode.PremiereDate.Value).TotalDays > 30;
 
                 if (!skipItem)
                 {
@@ -351,7 +348,7 @@ namespace MediaBrowser.Controller.Entities.TV
             await ProviderManager.RefreshSingleItem(this, refreshOptions, cancellationToken).ConfigureAwait(false);
         }
 
-        public List<BaseItem> GetSeasonEpisodes(Season parentSeason, User user, DtoOptions options)
+        public List<BaseItem> GetSeasonEpisodes(Season parentSeason, User user, DtoOptions options, bool shouldIncludeMissingEpisodes)
         {
             var queryFromSeries = ConfigurationManager.Configuration.DisplaySpecialsWithinSeasons;
 
@@ -364,29 +361,26 @@ namespace MediaBrowser.Controller.Entities.TV
             {
                 AncestorWithPresentationUniqueKey = queryFromSeries ? null : seriesKey,
                 SeriesPresentationUniqueKey = queryFromSeries ? seriesKey : null,
-                IncludeItemTypes = new[] { typeof(Episode).Name },
-                OrderBy = new[] { ItemSortBy.SortName }.Select(i => new ValueTuple<string, SortOrder>(i, SortOrder.Ascending)).ToArray(),
+                IncludeItemTypes = new[] { BaseItemKind.Episode },
+                OrderBy = new[] { (ItemSortBy.SortName, SortOrder.Ascending) },
                 DtoOptions = options
             };
-            if (user != null)
+
+            if (!shouldIncludeMissingEpisodes)
             {
-                var config = user.Configuration;
-                if (!config.DisplayMissingEpisodes)
-                {
-                    query.IsMissing = false;
-                }
+                query.IsMissing = false;
             }
 
             var allItems = LibraryManager.GetItemList(query);
 
-            return GetSeasonEpisodes(parentSeason, user, allItems, options);
+            return GetSeasonEpisodes(parentSeason, user, allItems, options, shouldIncludeMissingEpisodes);
         }
 
-        public List<BaseItem> GetSeasonEpisodes(Season parentSeason, User user, IEnumerable<BaseItem> allSeriesEpisodes, DtoOptions options)
+        public List<BaseItem> GetSeasonEpisodes(Season parentSeason, User user, IEnumerable<BaseItem> allSeriesEpisodes, DtoOptions options, bool shouldIncludeMissingEpisodes)
         {
-            if (allSeriesEpisodes == null)
+            if (allSeriesEpisodes is null)
             {
-                return GetSeasonEpisodes(parentSeason, user, options);
+                return GetSeasonEpisodes(parentSeason, user, options, shouldIncludeMissingEpisodes);
             }
 
             var episodes = FilterEpisodesBySeason(allSeriesEpisodes, parentSeason, ConfigurationManager.Configuration.DisplaySpecialsWithinSeasons);
@@ -399,6 +393,10 @@ namespace MediaBrowser.Controller.Entities.TV
         /// <summary>
         /// Filters the episodes by season.
         /// </summary>
+        /// <param name="episodes">The episodes.</param>
+        /// <param name="parentSeason">The season.</param>
+        /// <param name="includeSpecials"><c>true</c> to include special, <c>false</c> to not.</param>
+        /// <returns>The set of episodes.</returns>
         public static IEnumerable<BaseItem> FilterEpisodesBySeason(IEnumerable<BaseItem> episodes, Season parentSeason, bool includeSpecials)
         {
             var seasonNumber = parentSeason.IndexNumber;
@@ -422,13 +420,17 @@ namespace MediaBrowser.Controller.Entities.TV
                 }
 
                 var season = episodeItem.Season;
-                return season != null && string.Equals(GetUniqueSeriesKey(season), seasonPresentationKey, StringComparison.OrdinalIgnoreCase);
+                return season is not null && string.Equals(GetUniqueSeriesKey(season), seasonPresentationKey, StringComparison.OrdinalIgnoreCase);
             });
         }
 
         /// <summary>
         /// Filters the episodes by season.
         /// </summary>
+        /// <param name="episodes">The episodes.</param>
+        /// <param name="seasonNumber">The season.</param>
+        /// <param name="includeSpecials"><c>true</c> to include special, <c>false</c> to not.</param>
+        /// <returns>The set of episodes.</returns>
         public static IEnumerable<Episode> FilterEpisodesBySeason(IEnumerable<Episode> episodes, int seasonNumber, bool includeSpecials)
         {
             if (!includeSpecials || seasonNumber < 1)
@@ -440,7 +442,7 @@ namespace MediaBrowser.Controller.Entities.TV
             {
                 var episode = i;
 
-                if (episode != null)
+                if (episode is not null)
                 {
                     var currentSeasonNumber = episode.AiredSeasonNumber;
 
@@ -451,10 +453,9 @@ namespace MediaBrowser.Controller.Entities.TV
             });
         }
 
-
-        protected override bool GetBlockUnratedValue(UserPolicy config)
+        protected override bool GetBlockUnratedValue(User user)
         {
-            return config.BlockUnratedItems.Contains(UnratedItem.Series);
+            return user.GetPreferenceValues<UnratedItem>(PreferenceKind.BlockUnratedItems).Contains(UnratedItem.Series);
         }
 
         public override UnratedItem GetBlockUnratedType()
@@ -488,25 +489,5 @@ namespace MediaBrowser.Controller.Entities.TV
 
             return hasChanges;
         }
-
-        public override List<ExternalUrl> GetRelatedUrls()
-        {
-            var list = base.GetRelatedUrls();
-
-            var imdbId = this.GetProviderId(MetadataProviders.Imdb);
-            if (!string.IsNullOrEmpty(imdbId))
-            {
-                list.Add(new ExternalUrl
-                {
-                    Name = "Trakt",
-                    Url = string.Format("https://trakt.tv/shows/{0}", imdbId)
-                });
-            }
-
-            return list;
-        }
-
-        [JsonIgnore]
-        public override bool StopRefreshIfLocalMetadataFound => false;
     }
 }

@@ -13,11 +13,22 @@ using Microsoft.Extensions.Logging;
 
 namespace MediaBrowser.Providers.TV
 {
+    /// <summary>
+    /// Service to manage season metadata.
+    /// </summary>
     public class SeasonMetadataService : MetadataService<Season, SeasonInfo>
     {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SeasonMetadataService"/> class.
+        /// </summary>
+        /// <param name="serverConfigurationManager">Instance of the <see cref="IServerConfigurationManager"/> interface.</param>
+        /// <param name="logger">Instance of the <see cref="ILogger{SeasonMetadataService}"/> interface.</param>
+        /// <param name="providerManager">Instance of the <see cref="IProviderManager"/> interface.</param>
+        /// <param name="fileSystem">Instance of the <see cref="IFileSystem"/> interface.</param>
+        /// <param name="libraryManager">Instance of the <see cref="ILibraryManager"/> interface.</param>
         public SeasonMetadataService(
             IServerConfigurationManager serverConfigurationManager,
-            ILogger logger,
+            ILogger<SeasonMetadataService> logger,
             IProviderManager providerManager,
             IFileSystem fileSystem,
             ILibraryManager libraryManager)
@@ -26,18 +37,21 @@ namespace MediaBrowser.Providers.TV
         }
 
         /// <inheritdoc />
-        protected override ItemUpdateType BeforeSaveInternal(Season item, bool isFullRefresh, ItemUpdateType currentUpdateType)
-        {
-            var updateType = base.BeforeSaveInternal(item, isFullRefresh, currentUpdateType);
+        protected override bool EnableUpdatingPremiereDateFromChildren => true;
 
-            if (item.IndexNumber.HasValue && item.IndexNumber.Value == 0)
+        /// <inheritdoc />
+        protected override ItemUpdateType BeforeSaveInternal(Season item, bool isFullRefresh, ItemUpdateType updateType)
+        {
+            var updatedType = base.BeforeSaveInternal(item, isFullRefresh, updateType);
+
+            if (item.IndexNumber == 0 && !item.IsLocked && !item.LockedFields.Contains(MetadataField.Name))
             {
                 var seasonZeroDisplayName = LibraryManager.GetLibraryOptions(item).SeasonZeroDisplayName;
 
                 if (!string.Equals(item.Name, seasonZeroDisplayName, StringComparison.OrdinalIgnoreCase))
                 {
                     item.Name = seasonZeroDisplayName;
-                    updateType = updateType | ItemUpdateType.MetadataEdit;
+                    updatedType |= ItemUpdateType.MetadataEdit;
                 }
             }
 
@@ -45,28 +59,25 @@ namespace MediaBrowser.Providers.TV
             if (!string.Equals(item.SeriesName, seriesName, StringComparison.Ordinal))
             {
                 item.SeriesName = seriesName;
-                updateType |= ItemUpdateType.MetadataImport;
+                updatedType |= ItemUpdateType.MetadataImport;
             }
 
             var seriesPresentationUniqueKey = item.FindSeriesPresentationUniqueKey();
             if (!string.Equals(item.SeriesPresentationUniqueKey, seriesPresentationUniqueKey, StringComparison.Ordinal))
             {
                 item.SeriesPresentationUniqueKey = seriesPresentationUniqueKey;
-                updateType |= ItemUpdateType.MetadataImport;
+                updatedType |= ItemUpdateType.MetadataImport;
             }
 
             var seriesId = item.FindSeriesId();
             if (!item.SeriesId.Equals(seriesId))
             {
                 item.SeriesId = seriesId;
-                updateType |= ItemUpdateType.MetadataImport;
+                updatedType |= ItemUpdateType.MetadataImport;
             }
 
-            return updateType;
+            return updatedType;
         }
-
-        /// <inheritdoc />
-        protected override bool EnableUpdatingPremiereDateFromChildren => true;
 
         /// <inheritdoc />
         protected override IList<BaseItem> GetChildrenForMetadataUpdates(Season item)
@@ -83,12 +94,6 @@ namespace MediaBrowser.Providers.TV
             }
 
             return updateType;
-        }
-
-        /// <inheritdoc />
-        protected override void MergeData(MetadataResult<Season> source, MetadataResult<Season> target, MetadataFields[] lockedFields, bool replaceData, bool mergeMetadataSettings)
-        {
-            ProviderUtils.MergeBaseItemData(source, target, lockedFields, replaceData, mergeMetadataSettings);
         }
 
         private ItemUpdateType SaveIsVirtualItem(Season item, IList<BaseItem> episodes)

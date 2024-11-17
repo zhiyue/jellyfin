@@ -3,78 +3,60 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using SQLitePCL.pretty;
+using Microsoft.Data.Sqlite;
 
-namespace Emby.Server.Implementations.Data
+namespace Emby.Server.Implementations.Data;
+
+public sealed class ManagedConnection : IDisposable
 {
-    public class ManagedConnection : IDisposable
+    private readonly SemaphoreSlim? _writeLock;
+
+    private SqliteConnection _db;
+
+    private bool _disposed = false;
+
+    public ManagedConnection(SqliteConnection db, SemaphoreSlim? writeLock)
     {
-        private SQLiteDatabaseConnection _db;
-        private readonly SemaphoreSlim _writeLock;
-        private bool _disposed = false;
+        _db = db;
+        _writeLock = writeLock;
+    }
 
-        public ManagedConnection(SQLiteDatabaseConnection db, SemaphoreSlim writeLock)
+    public SqliteTransaction BeginTransaction()
+        => _db.BeginTransaction();
+
+    public SqliteCommand CreateCommand()
+        => _db.CreateCommand();
+
+    public void Execute(string commandText)
+        => _db.Execute(commandText);
+
+    public SqliteCommand PrepareStatement(string sql)
+        => _db.PrepareStatement(sql);
+
+    public IEnumerable<SqliteDataReader> Query(string commandText)
+        => _db.Query(commandText);
+
+    public void Dispose()
+    {
+        if (_disposed)
         {
-            _db = db;
-            _writeLock = writeLock;
+            return;
         }
 
-        public IStatement PrepareStatement(string sql)
+        if (_writeLock is null)
         {
-            return _db.PrepareStatement(sql);
+            // Read connections are managed with an internal pool
+            _db.Dispose();
         }
-
-        public IEnumerable<IStatement> PrepareAll(string sql)
+        else
         {
-            return _db.PrepareAll(sql);
-        }
-
-        public void ExecuteAll(string sql)
-        {
-            _db.ExecuteAll(sql);
-        }
-
-        public void Execute(string sql, params object[] values)
-        {
-            _db.Execute(sql, values);
-        }
-
-        public void RunQueries(string[] sql)
-        {
-            _db.RunQueries(sql);
-        }
-
-        public void RunInTransaction(Action<IDatabaseConnection> action, TransactionMode mode)
-        {
-            _db.RunInTransaction(action, mode);
-        }
-
-        public T RunInTransaction<T>(Func<IDatabaseConnection, T> action, TransactionMode mode)
-        {
-            return _db.RunInTransaction(action, mode);
-        }
-
-        public IEnumerable<IReadOnlyList<IResultSetValue>> Query(string sql)
-        {
-            return _db.Query(sql);
-        }
-
-        public IEnumerable<IReadOnlyList<IResultSetValue>> Query(string sql, params object[] values)
-        {
-            return _db.Query(sql, values);
-        }
-
-        public void Dispose()
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
+            // Write lock is managed by BaseSqliteRepository
+            // Don't dispose here
             _writeLock.Release();
-
-            _db = null; // Don't dispose it
-            _disposed = true;
         }
+
+        _db = null!;
+
+        _disposed = true;
     }
 }

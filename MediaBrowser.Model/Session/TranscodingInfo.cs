@@ -1,53 +1,76 @@
-namespace MediaBrowser.Model.Session
+#nullable disable
+
+using MediaBrowser.Model.Entities;
+
+namespace MediaBrowser.Model.Session;
+
+/// <summary>
+/// Class holding information on a runnning transcode.
+/// </summary>
+public class TranscodingInfo
 {
-    public class TranscodingInfo
-    {
-        public string AudioCodec { get; set; }
-        public string VideoCodec { get; set; }
-        public string Container { get; set; }
-        public bool IsVideoDirect { get; set; }
-        public bool IsAudioDirect { get; set; }
-        public int? Bitrate { get; set; }
+    /// <summary>
+    /// Gets or sets the thread count used for encoding.
+    /// </summary>
+    public string AudioCodec { get; set; }
 
-        public float? Framerate { get; set; }
-        public double? CompletionPercentage { get; set; }
+    /// <summary>
+    /// Gets or sets the thread count used for encoding.
+    /// </summary>
+    public string VideoCodec { get; set; }
 
-        public int? Width { get; set; }
-        public int? Height { get; set; }
-        public int? AudioChannels { get; set; }
+    /// <summary>
+    /// Gets or sets the thread count used for encoding.
+    /// </summary>
+    public string Container { get; set; }
 
-        public TranscodeReason[] TranscodeReasons { get; set; }
+    /// <summary>
+    /// Gets or sets a value indicating whether the video is passed through.
+    /// </summary>
+    public bool IsVideoDirect { get; set; }
 
-        public TranscodingInfo()
-        {
-            TranscodeReasons = new TranscodeReason[] { };
-        }
-    }
+    /// <summary>
+    /// Gets or sets a value indicating whether the audio is passed through.
+    /// </summary>
+    public bool IsAudioDirect { get; set; }
 
-    public enum TranscodeReason
-    {
-        ContainerNotSupported = 0,
-        VideoCodecNotSupported = 1,
-        AudioCodecNotSupported = 2,
-        ContainerBitrateExceedsLimit = 3,
-        AudioBitrateNotSupported = 4,
-        AudioChannelsNotSupported = 5,
-        VideoResolutionNotSupported = 6,
-        UnknownVideoStreamInfo = 7,
-        UnknownAudioStreamInfo = 8,
-        AudioProfileNotSupported = 9,
-        AudioSampleRateNotSupported = 10,
-        AnamorphicVideoNotSupported = 11,
-        InterlacedVideoNotSupported = 12,
-        SecondaryAudioNotSupported = 13,
-        RefFramesNotSupported = 14,
-        VideoBitDepthNotSupported = 15,
-        VideoBitrateNotSupported = 16,
-        VideoFramerateNotSupported = 17,
-        VideoLevelNotSupported = 18,
-        VideoProfileNotSupported = 19,
-        AudioBitDepthNotSupported = 20,
-        SubtitleCodecNotSupported = 21,
-        DirectPlayError = 22
-    }
+    /// <summary>
+    /// Gets or sets the bitrate.
+    /// </summary>
+    public int? Bitrate { get; set; }
+
+    /// <summary>
+    /// Gets or sets the framerate.
+    /// </summary>
+    public float? Framerate { get; set; }
+
+    /// <summary>
+    /// Gets or sets the completion percentage.
+    /// </summary>
+    public double? CompletionPercentage { get; set; }
+
+    /// <summary>
+    /// Gets or sets the video width.
+    /// </summary>
+    public int? Width { get; set; }
+
+    /// <summary>
+    /// Gets or sets the video height.
+    /// </summary>
+    public int? Height { get; set; }
+
+    /// <summary>
+    /// Gets or sets the audio channels.
+    /// </summary>
+    public int? AudioChannels { get; set; }
+
+    /// <summary>
+    /// Gets or sets the hardware acceleration type.
+    /// </summary>
+    public HardwareAccelerationType? HardwareAccelerationType { get; set; }
+
+    /// <summary>
+    /// Gets or sets the transcode reasons.
+    /// </summary>
+    public TranscodeReason TranscodeReasons { get; set; }
 }

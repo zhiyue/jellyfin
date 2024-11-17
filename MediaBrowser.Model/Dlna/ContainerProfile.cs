@@ -1,97 +1,49 @@
+#pragma warning disable CA1819 // Properties should not return arrays
+
 using System;
+using System.Collections.Generic;
 using System.Xml.Serialization;
 using MediaBrowser.Model.Extensions;
 
-namespace MediaBrowser.Model.Dlna
+namespace MediaBrowser.Model.Dlna;
+
+/// <summary>
+/// Defines the <see cref="ContainerProfile"/>.
+/// </summary>
+public class ContainerProfile
 {
-    public class ContainerProfile
+    /// <summary>
+    /// Gets or sets the <see cref="DlnaProfileType"/> which this container must meet.
+    /// </summary>
+    [XmlAttribute("type")]
+    public DlnaProfileType Type { get; set; }
+
+    /// <summary>
+    /// Gets or sets the list of <see cref="ProfileCondition"/> which this container will be applied to.
+    /// </summary>
+    public ProfileCondition[] Conditions { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the container(s) which this container must meet.
+    /// </summary>
+    [XmlAttribute("container")]
+    public string? Container { get; set; }
+
+    /// <summary>
+    /// Gets or sets the sub container(s) which this container must meet.
+    /// </summary>
+    [XmlAttribute("subcontainer")]
+    public string? SubContainer { get; set; }
+
+    /// <summary>
+    /// Returns true if an item in <paramref name="container"/> appears in the <see cref="Container"/> property.
+    /// </summary>
+    /// <param name="container">The item to match.</param>
+    /// <param name="useSubContainer">Consider subcontainers.</param>
+    /// <returns>The result of the operation.</returns>
+    public bool ContainsContainer(ReadOnlySpan<char> container, bool useSubContainer = false)
     {
-        [XmlAttribute("type")]
-        public DlnaProfileType Type { get; set; }
-        public ProfileCondition[] Conditions { get; set; }
-
-        [XmlAttribute("container")]
-        public string Container { get; set; }
-
-        public ContainerProfile()
-        {
-            Conditions = Array.Empty<ProfileCondition>();
-        }
-
-        public string[] GetContainers()
-        {
-            return SplitValue(Container);
-        }
-
-        public static string[] SplitValue(string value)
-        {
-            if (string.IsNullOrEmpty(value))
-            {
-                return Array.Empty<string>();
-            }
-
-            return value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-        }
-
-        public bool ContainsContainer(string container)
-        {
-            var containers = GetContainers();
-
-            return ContainsContainer(containers, container);
-        }
-
-        public static bool ContainsContainer(string profileContainers, string inputContainer)
-        {
-            var isNegativeList = false;
-            if (profileContainers != null && profileContainers.StartsWith("-"))
-            {
-                isNegativeList = true;
-                profileContainers = profileContainers.Substring(1);
-            }
-
-            return ContainsContainer(SplitValue(profileContainers), isNegativeList, inputContainer);
-        }
-
-        public static bool ContainsContainer(string[] profileContainers, string inputContainer)
-        {
-            return ContainsContainer(profileContainers, false, inputContainer);
-        }
-
-        public static bool ContainsContainer(string[] profileContainers, bool isNegativeList, string inputContainer)
-        {
-            if (profileContainers.Length == 0)
-            {
-                return true;
-            }
-
-            if (isNegativeList)
-            {
-                var allInputContainers = SplitValue(inputContainer);
-
-                foreach (var container in allInputContainers)
-                {
-                    if (ListHelper.ContainsIgnoreCase(profileContainers, container))
-                    {
-                        return false;
-                    }
-                }
-
-                return true;
-            }
-            else
-            {
-                var allInputContainers = SplitValue(inputContainer);
-
-                foreach (var container in allInputContainers)
-                {
-                    if (ListHelper.ContainsIgnoreCase(profileContainers, container))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-        }
+        var containerToCheck = useSubContainer && string.Equals(Container, "hls", StringComparison.OrdinalIgnoreCase) ? SubContainer : Container;
+        return ContainerHelper.ContainsContainer(containerToCheck, container);
     }
 }

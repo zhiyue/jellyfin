@@ -3,11 +3,11 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Emby.Server.Implementations.Library;
-using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Tasks;
 
-namespace Emby.Server.Implementations.ScheduledTasks
+namespace Emby.Server.Implementations.ScheduledTasks.Tasks
 {
     /// <summary>
     /// Class RefreshMediaLibraryTask.
@@ -15,40 +15,46 @@ namespace Emby.Server.Implementations.ScheduledTasks
     public class RefreshMediaLibraryTask : IScheduledTask
     {
         /// <summary>
-        /// The _library manager
+        /// The _library manager.
         /// </summary>
         private readonly ILibraryManager _libraryManager;
-        private readonly IServerConfigurationManager _config;
+        private readonly ILocalizationManager _localization;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RefreshMediaLibraryTask" /> class.
         /// </summary>
-        /// <param name="libraryManager">The library manager.</param>
-        public RefreshMediaLibraryTask(ILibraryManager libraryManager, IServerConfigurationManager config)
+        /// <param name="libraryManager">Instance of the <see cref="ILibraryManager"/> interface.</param>
+        /// <param name="localization">Instance of the <see cref="ILocalizationManager"/> interface.</param>
+        public RefreshMediaLibraryTask(ILibraryManager libraryManager, ILocalizationManager localization)
         {
             _libraryManager = libraryManager;
-            _config = config;
+            _localization = localization;
         }
 
-        /// <summary>
-        /// Creates the triggers that define when the task will run.
-        /// </summary>
-        /// <returns>IEnumerable{BaseTaskTrigger}.</returns>
+        /// <inheritdoc />
+        public string Name => _localization.GetLocalizedString("TaskRefreshLibrary");
+
+        /// <inheritdoc />
+        public string Description => _localization.GetLocalizedString("TaskRefreshLibraryDescription");
+
+        /// <inheritdoc />
+        public string Category => _localization.GetLocalizedString("TasksLibraryCategory");
+
+        /// <inheritdoc />
+        public string Key => "RefreshLibrary";
+
+        /// <inheritdoc />
         public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
         {
             yield return new TaskTriggerInfo
             {
-                Type = TaskTriggerInfo.TriggerInterval, IntervalTicks = TimeSpan.FromHours(12).Ticks
+                Type = TaskTriggerInfo.TriggerInterval,
+                IntervalTicks = TimeSpan.FromHours(12).Ticks
             };
         }
 
-        /// <summary>
-        /// Executes the internal.
-        /// </summary>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <param name="progress">The progress.</param>
-        /// <returns>Task.</returns>
-        public Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
+        /// <inheritdoc />
+        public Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -56,19 +62,5 @@ namespace Emby.Server.Implementations.ScheduledTasks
 
             return ((LibraryManager)_libraryManager).ValidateMediaLibraryInternal(progress, cancellationToken);
         }
-
-        public string Name => "Scan media library";
-
-        public string Description => "Scans your media library for new files and refreshes metadata.";
-
-        public string Category => "Library";
-
-        public string Key => "RefreshLibrary";
-
-        public bool IsHidden => false;
-
-        public bool IsEnabled => true;
-
-        public bool IsLogged => true;
     }
 }

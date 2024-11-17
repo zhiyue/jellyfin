@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Jellyfin.Data.Enums;
+using Jellyfin.Extensions;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Extensions;
@@ -11,89 +13,248 @@ using Microsoft.Extensions.Logging;
 
 namespace MediaBrowser.Model.Dlna
 {
+    /// <summary>
+    /// Class StreamBuilder.
+    /// </summary>
     public class StreamBuilder
     {
+        // Aliases
+        internal const TranscodeReason ContainerReasons = TranscodeReason.ContainerNotSupported | TranscodeReason.ContainerBitrateExceedsLimit;
+        internal const TranscodeReason AudioCodecReasons = TranscodeReason.AudioBitrateNotSupported | TranscodeReason.AudioChannelsNotSupported | TranscodeReason.AudioProfileNotSupported | TranscodeReason.AudioSampleRateNotSupported | TranscodeReason.SecondaryAudioNotSupported | TranscodeReason.AudioBitDepthNotSupported | TranscodeReason.AudioIsExternal;
+        internal const TranscodeReason AudioReasons = TranscodeReason.AudioCodecNotSupported | AudioCodecReasons;
+        internal const TranscodeReason VideoCodecReasons = TranscodeReason.VideoResolutionNotSupported | TranscodeReason.AnamorphicVideoNotSupported | TranscodeReason.InterlacedVideoNotSupported | TranscodeReason.VideoBitDepthNotSupported | TranscodeReason.VideoBitrateNotSupported | TranscodeReason.VideoFramerateNotSupported | TranscodeReason.VideoLevelNotSupported | TranscodeReason.RefFramesNotSupported | TranscodeReason.VideoRangeTypeNotSupported | TranscodeReason.VideoProfileNotSupported;
+        internal const TranscodeReason VideoReasons = TranscodeReason.VideoCodecNotSupported | VideoCodecReasons;
+        internal const TranscodeReason DirectStreamReasons = AudioReasons | TranscodeReason.ContainerNotSupported | TranscodeReason.VideoCodecTagNotSupported;
+
         private readonly ILogger _logger;
         private readonly ITranscoderSupport _transcoderSupport;
+        private static readonly string[] _supportedHlsVideoCodecs = ["h264", "hevc", "vp9", "av1"];
+        private static readonly string[] _supportedHlsAudioCodecsTs = ["aac", "ac3", "eac3", "mp3"];
+        private static readonly string[] _supportedHlsAudioCodecsMp4 = ["aac", "ac3", "eac3", "mp3", "alac", "flac", "opus", "dca", "truehd"];
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="StreamBuilder"/> class.
+        /// </summary>
+        /// <param name="transcoderSupport">The <see cref="ITranscoderSupport"/> object.</param>
+        /// <param name="logger">The <see cref="ILogger"/> object.</param>
         public StreamBuilder(ITranscoderSupport transcoderSupport, ILogger logger)
         {
             _transcoderSupport = transcoderSupport;
             _logger = logger;
         }
 
-        public StreamBuilder(ILogger logger)
-            : this(new FullTranscoderSupport(), logger)
+        /// <summary>
+        /// Gets the optimal audio stream.
+        /// </summary>
+        /// <param name="options">The <see cref="MediaOptions"/> object to get the audio stream from.</param>
+        /// <returns>The <see cref="StreamInfo"/> of the optimal audio stream.</returns>
+        public StreamInfo? GetOptimalAudioStream(MediaOptions options)
         {
-        }
+            ValidateMediaOptions(options, false);
 
-        public StreamInfo BuildAudioItem(AudioOptions options)
-        {
-            ValidateAudioInput(options);
-
-            var mediaSources = new List<MediaSourceInfo>();
-            foreach (MediaSourceInfo i in options.MediaSources)
+            List<StreamInfo> streams = [];
+            foreach (var mediaSource in options.MediaSources)
             {
-                if (string.IsNullOrEmpty(options.MediaSourceId) ||
-                    StringHelper.EqualsIgnoreCase(i.Id, options.MediaSourceId))
+                if (!(string.IsNullOrEmpty(options.MediaSourceId)
+                    || string.Equals(mediaSource.Id, options.MediaSourceId, StringComparison.OrdinalIgnoreCase)))
                 {
-                    mediaSources.Add(i);
+                    continue;
                 }
-            }
 
-            var streams = new List<StreamInfo>();
-            foreach (MediaSourceInfo i in mediaSources)
-            {
-                StreamInfo streamInfo = BuildAudioItem(i, options);
-                if (streamInfo != null)
+                StreamInfo? streamInfo = GetOptimalAudioStream(mediaSource, options);
+                if (streamInfo is not null)
                 {
+                    streamInfo.DeviceId = options.DeviceId;
+                    streamInfo.DeviceProfileId = options.Profile.Id?.ToString("N", CultureInfo.InvariantCulture);
                     streams.Add(streamInfo);
                 }
-            }
-
-            foreach (StreamInfo stream in streams)
-            {
-                stream.DeviceId = options.DeviceId;
-                stream.DeviceProfileId = options.Profile.Id;
             }
 
             return GetOptimalStream(streams, options.GetMaxBitrate(true) ?? 0);
         }
 
-        public StreamInfo BuildVideoItem(VideoOptions options)
+        private StreamInfo? GetOptimalAudioStream(MediaSourceInfo item, MediaOptions options)
         {
-            ValidateInput(options);
-
-            var mediaSources = new List<MediaSourceInfo>();
-            foreach (MediaSourceInfo i in options.MediaSources)
+            var playlistItem = new StreamInfo
             {
-                if (string.IsNullOrEmpty(options.MediaSourceId) ||
-                    StringHelper.EqualsIgnoreCase(i.Id, options.MediaSourceId))
+                ItemId = options.ItemId,
+                MediaType = DlnaProfileType.Audio,
+                MediaSource = item,
+                RunTimeTicks = item.RunTimeTicks,
+                Context = options.Context,
+                DeviceProfile = options.Profile
+            };
+
+            if (options.ForceDirectPlay)
+            {
+                playlistItem.PlayMethod = PlayMethod.DirectPlay;
+                playlistItem.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, options.Profile, DlnaProfileType.Audio);
+                return playlistItem;
+            }
+
+            if (options.ForceDirectStream)
+            {
+                playlistItem.PlayMethod = PlayMethod.DirectStream;
+                playlistItem.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, options.Profile, DlnaProfileType.Audio);
+                return playlistItem;
+            }
+
+            MediaStream audioStream = item.GetDefaultAudioStream(null);
+
+            var directPlayInfo = GetAudioDirectPlayProfile(item, audioStream, options);
+
+            var directPlayMethod = directPlayInfo.PlayMethod;
+            var transcodeReasons = directPlayInfo.TranscodeReasons;
+
+            var inputAudioChannels = audioStream?.Channels;
+            var inputAudioBitrate = audioStream?.BitRate;
+            var inputAudioSampleRate = audioStream?.SampleRate;
+            var inputAudioBitDepth = audioStream?.BitDepth;
+
+            if (directPlayMethod is PlayMethod.DirectPlay)
+            {
+                var profile = options.Profile;
+                var audioFailureConditions = GetProfileConditionsForAudio(profile.CodecProfiles, item.Container, audioStream?.Codec, inputAudioChannels, inputAudioBitrate, inputAudioSampleRate, inputAudioBitDepth, true);
+                var audioFailureReasons = AggregateFailureConditions(item, profile, "AudioCodecProfile", audioFailureConditions);
+                transcodeReasons |= audioFailureReasons;
+
+                if (audioFailureReasons == 0)
                 {
-                    mediaSources.Add(i);
+                    playlistItem.PlayMethod = directPlayMethod.Value;
+                    playlistItem.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, options.Profile, DlnaProfileType.Audio, directPlayInfo.Profile);
+
+                    return playlistItem;
                 }
             }
 
-            var streams = new List<StreamInfo>();
-            foreach (MediaSourceInfo i in mediaSources)
+            if (directPlayMethod is PlayMethod.DirectStream)
             {
-                var streamInfo = BuildVideoItem(i, options);
-                if (streamInfo != null)
+                var remuxContainer = item.TranscodingContainer ?? "ts";
+                string[] supportedHlsContainers = ["ts", "mp4"];
+                // If the container specified for the profile is an HLS supported container, use that container instead, overriding the preference
+                // The client should be responsible to ensure this container is compatible
+                remuxContainer = Array.Exists(supportedHlsContainers, element => string.Equals(element, directPlayInfo.Profile?.Container, StringComparison.OrdinalIgnoreCase)) ? directPlayInfo.Profile?.Container : remuxContainer;
+                bool codeIsSupported;
+                if (item.TranscodingSubProtocol == MediaStreamProtocol.hls)
+                {
+                    // Enforce HLS audio codec restrictions
+                    if (string.Equals(remuxContainer, "mp4", StringComparison.OrdinalIgnoreCase))
+                    {
+                        codeIsSupported = _supportedHlsAudioCodecsMp4.Contains(directPlayInfo.Profile?.AudioCodec ?? directPlayInfo.Profile?.Container);
+                    }
+                    else
+                    {
+                        codeIsSupported = _supportedHlsAudioCodecsTs.Contains(directPlayInfo.Profile?.AudioCodec ?? directPlayInfo.Profile?.Container);
+                    }
+                }
+                else
+                {
+                    // Let's assume the client has given a correct container for http
+                    codeIsSupported = true;
+                }
+
+                if (codeIsSupported)
+                {
+                    playlistItem.PlayMethod = directPlayMethod.Value;
+                    playlistItem.Container = remuxContainer;
+                    playlistItem.TranscodeReasons = transcodeReasons;
+                    playlistItem.SubProtocol = item.TranscodingSubProtocol;
+                    item.TranscodingContainer = remuxContainer;
+                    return playlistItem;
+                }
+
+                transcodeReasons |= TranscodeReason.AudioCodecNotSupported;
+                playlistItem.TranscodeReasons = transcodeReasons;
+            }
+
+            TranscodingProfile? transcodingProfile = null;
+            foreach (var tcProfile in options.Profile.TranscodingProfiles)
+            {
+                if (tcProfile.Type == playlistItem.MediaType
+                    && tcProfile.Context == options.Context
+                    && _transcoderSupport.CanEncodeToAudioCodec(tcProfile.AudioCodec ?? tcProfile.Container))
+                {
+                    transcodingProfile = tcProfile;
+                    break;
+                }
+            }
+
+            if (transcodingProfile is not null)
+            {
+                if (!item.SupportsTranscoding)
+                {
+                    return null;
+                }
+
+                SetStreamInfoOptionsFromTranscodingProfile(item, playlistItem, transcodingProfile);
+
+                var audioTranscodingConditions = GetProfileConditionsForAudio(options.Profile.CodecProfiles, transcodingProfile.Container, transcodingProfile.AudioCodec, inputAudioChannels, inputAudioBitrate, inputAudioSampleRate, inputAudioBitDepth, false).ToArray();
+                ApplyTranscodingConditions(playlistItem, audioTranscodingConditions, null, true, true);
+
+                // Honor requested max channels
+                playlistItem.GlobalMaxAudioChannels = options.MaxAudioChannels;
+
+                var configuredBitrate = options.GetMaxBitrate(true);
+
+                long transcodingBitrate = options.AudioTranscodingBitrate
+                    ?? (options.Context == EncodingContext.Streaming ? options.Profile.MusicStreamingTranscodingBitrate : null)
+                    ?? configuredBitrate
+                    ?? 128000;
+
+                if (configuredBitrate.HasValue)
+                {
+                    transcodingBitrate = Math.Min(configuredBitrate.Value, transcodingBitrate);
+                }
+
+                var longBitrate = Math.Min(transcodingBitrate, playlistItem.AudioBitrate ?? transcodingBitrate);
+                playlistItem.AudioBitrate = longBitrate > int.MaxValue ? int.MaxValue : Convert.ToInt32(longBitrate);
+
+                // Pure audio transcoding does not support comma separated list of transcoding codec at the moment.
+                // So just use the AudioCodec as is would be safe enough as the _transcoderSupport.CanEncodeToAudioCodec
+                // would fail so this profile will not even be picked up.
+                if (playlistItem.AudioCodecs.Count == 0 && !string.IsNullOrWhiteSpace(transcodingProfile.AudioCodec))
+                {
+                    playlistItem.AudioCodecs = [transcodingProfile.AudioCodec];
+                }
+            }
+
+            playlistItem.TranscodeReasons = transcodeReasons;
+            return playlistItem;
+        }
+
+        /// <summary>
+        /// Gets the optimal video stream.
+        /// </summary>
+        /// <param name="options">The <see cref="MediaOptions"/> object to get the video stream from.</param>
+        /// <returns>The <see cref="StreamInfo"/> of the optimal video stream.</returns>
+        public StreamInfo? GetOptimalVideoStream(MediaOptions options)
+        {
+            ValidateMediaOptions(options, true);
+
+            var mediaSources = string.IsNullOrEmpty(options.MediaSourceId)
+                ? options.MediaSources
+                : options.MediaSources.Where(x => string.Equals(x.Id, options.MediaSourceId, StringComparison.OrdinalIgnoreCase));
+
+            List<StreamInfo> streams = [];
+            foreach (var mediaSourceInfo in mediaSources)
+            {
+                var streamInfo = BuildVideoItem(mediaSourceInfo, options);
+                if (streamInfo is not null)
                 {
                     streams.Add(streamInfo);
                 }
             }
 
-            foreach (StreamInfo stream in streams)
+            foreach (var stream in streams)
             {
                 stream.DeviceId = options.DeviceId;
-                stream.DeviceProfileId = options.Profile.Id;
+                stream.DeviceProfileId = options.Profile.Id?.ToString("N", CultureInfo.InvariantCulture);
             }
 
             return GetOptimalStream(streams, options.GetMaxBitrate(false) ?? 0);
         }
 
-        private static StreamInfo GetOptimalStream(List<StreamInfo> streams, long maxBitrate)
+        private static StreamInfo? GetOptimalStream(List<StreamInfo> streams, long maxBitrate)
             => SortMediaSources(streams, maxBitrate).FirstOrDefault();
 
         private static IOrderedEnumerable<StreamInfo> SortMediaSources(List<StreamInfo> streams, long maxBitrate)
@@ -101,13 +262,12 @@ namespace MediaBrowser.Model.Dlna
             return streams.OrderBy(i =>
             {
                 // Nothing beats direct playing a file
-                if (i.PlayMethod == PlayMethod.DirectPlay && i.MediaSource.Protocol == MediaProtocol.File)
+                if (i.PlayMethod == PlayMethod.DirectPlay && i.MediaSource?.Protocol == MediaProtocol.File)
                 {
                     return 0;
                 }
 
                 return 1;
-
             }).ThenBy(i =>
             {
                 switch (i.PlayMethod)
@@ -119,33 +279,30 @@ namespace MediaBrowser.Model.Dlna
                     default:
                         return 1;
                 }
-
             }).ThenBy(i =>
             {
-                switch (i.MediaSource.Protocol)
+                switch (i.MediaSource?.Protocol)
                 {
                     case MediaProtocol.File:
                         return 0;
                     default:
                         return 1;
                 }
-
             }).ThenBy(i =>
             {
                 if (maxBitrate > 0)
                 {
-                    if (i.MediaSource.Bitrate.HasValue)
+                    if (i.MediaSource?.Bitrate is not null)
                     {
                         return Math.Abs(i.MediaSource.Bitrate.Value - maxBitrate);
                     }
                 }
 
                 return 0;
-
             }).ThenBy(streams.IndexOf);
         }
 
-        private static TranscodeReason? GetTranscodeReasonForFailedCondition(ProfileCondition condition)
+        private static TranscodeReason GetTranscodeReasonForFailedCondition(ProfileCondition condition)
         {
             switch (condition.Property)
             {
@@ -163,7 +320,7 @@ namespace MediaBrowser.Model.Dlna
 
                 case ProfileConditionValue.Has64BitOffsets:
                     // TODO
-                    return null;
+                    return 0;
 
                 case ProfileConditionValue.Height:
                     return TranscodeReason.VideoResolutionNotSupported;
@@ -173,7 +330,7 @@ namespace MediaBrowser.Model.Dlna
 
                 case ProfileConditionValue.IsAvc:
                     // TODO
-                    return null;
+                    return 0;
 
                 case ProfileConditionValue.IsInterlaced:
                     return TranscodeReason.InterlacedVideoNotSupported;
@@ -183,15 +340,15 @@ namespace MediaBrowser.Model.Dlna
 
                 case ProfileConditionValue.NumAudioStreams:
                     // TODO
-                    return null;
+                    return 0;
 
                 case ProfileConditionValue.NumVideoStreams:
                     // TODO
-                    return null;
+                    return 0;
 
                 case ProfileConditionValue.PacketLength:
                     // TODO
-                    return null;
+                    return 0;
 
                 case ProfileConditionValue.RefFrames:
                     return TranscodeReason.RefFramesNotSupported;
@@ -206,7 +363,7 @@ namespace MediaBrowser.Model.Dlna
                     return TranscodeReason.VideoBitrateNotSupported;
 
                 case ProfileConditionValue.VideoCodecTag:
-                    return TranscodeReason.VideoCodecNotSupported;
+                    return TranscodeReason.VideoCodecTagNotSupported;
 
                 case ProfileConditionValue.VideoFramerate:
                     return TranscodeReason.VideoFramerateNotSupported;
@@ -217,300 +374,131 @@ namespace MediaBrowser.Model.Dlna
                 case ProfileConditionValue.VideoProfile:
                     return TranscodeReason.VideoProfileNotSupported;
 
+                case ProfileConditionValue.VideoRangeType:
+                    return TranscodeReason.VideoRangeTypeNotSupported;
+
                 case ProfileConditionValue.VideoTimestamp:
                     // TODO
-                    return null;
+                    return 0;
 
                 case ProfileConditionValue.Width:
                     return TranscodeReason.VideoResolutionNotSupported;
 
                 default:
-                    return null;
+                    return 0;
             }
         }
 
-        public static string NormalizeMediaSourceFormatIntoSingleContainer(string inputContainer, string _, DeviceProfile profile, DlnaProfileType type)
+        /// <summary>
+        /// Normalizes input container.
+        /// </summary>
+        /// <param name="inputContainer">The input container.</param>
+        /// <param name="profile">The <see cref="DeviceProfile"/>.</param>
+        /// <param name="type">The <see cref="DlnaProfileType"/>.</param>
+        /// <param name="playProfile">The <see cref="DirectPlayProfile"/> object to get the video stream from.</param>
+        /// <returns>The normalized input container.</returns>
+        public static string? NormalizeMediaSourceFormatIntoSingleContainer(string inputContainer, DeviceProfile? profile, DlnaProfileType type, DirectPlayProfile? playProfile = null)
         {
-            if (string.IsNullOrEmpty(inputContainer))
+            // If the source is Live TV the inputContainer will be null until the mediasource is probed on first access
+            if (profile is null || string.IsNullOrEmpty(inputContainer) || !inputContainer.Contains(',', StringComparison.OrdinalIgnoreCase))
             {
-                return null;
+                return inputContainer;
             }
 
-            var formats = ContainerProfile.SplitValue(inputContainer);
-
-            if (formats.Length == 1)
+            var formats = ContainerHelper.Split(inputContainer);
+            var playProfiles = playProfile is null ? profile.DirectPlayProfiles : [playProfile];
+            foreach (var format in formats)
             {
-                return formats[0];
-            }
-
-            if (profile != null)
-            {
-                foreach (var format in formats)
+                foreach (var directPlayProfile in playProfiles)
                 {
-                    foreach (var directPlayProfile in profile.DirectPlayProfiles)
+                    if (directPlayProfile.Type != type)
                     {
-                        if (directPlayProfile.Type == type
-                            && directPlayProfile.SupportsContainer(format))
-                        {
-                            return format;
-                        }
+                        continue;
+                    }
+
+                    if (directPlayProfile.SupportsContainer(format))
+                    {
+                        return format;
                     }
                 }
             }
 
-            return formats[0];
+            return inputContainer;
         }
 
-        private StreamInfo BuildAudioItem(MediaSourceInfo item, AudioOptions options)
+        private (DirectPlayProfile? Profile, PlayMethod? PlayMethod, TranscodeReason TranscodeReasons) GetAudioDirectPlayProfile(MediaSourceInfo item, MediaStream audioStream, MediaOptions options)
         {
-            StreamInfo playlistItem = new StreamInfo
-            {
-                ItemId = options.ItemId,
-                MediaType = DlnaProfileType.Audio,
-                MediaSource = item,
-                RunTimeTicks = item.RunTimeTicks,
-                Context = options.Context,
-                DeviceProfile = options.Profile
-            };
-
-            if (options.ForceDirectPlay)
-            {
-                playlistItem.PlayMethod = PlayMethod.DirectPlay;
-                playlistItem.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, item.Path, options.Profile, DlnaProfileType.Audio);
-                return playlistItem;
-            }
-
-            if (options.ForceDirectStream)
-            {
-                playlistItem.PlayMethod = PlayMethod.DirectStream;
-                playlistItem.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, item.Path, options.Profile, DlnaProfileType.Audio);
-                return playlistItem;
-            }
-
-            var audioStream = item.GetDefaultAudioStream(null);
-
-            var directPlayInfo = GetAudioDirectPlayMethods(item, audioStream, options);
-
-            var directPlayMethods = directPlayInfo.Item1;
-            var transcodeReasons = directPlayInfo.Item2.ToList();
-
-            int? inputAudioChannels = audioStream?.Channels;
-            int? inputAudioBitrate = audioStream?.BitDepth;
-            int? inputAudioSampleRate = audioStream?.SampleRate;
-            int? inputAudioBitDepth = audioStream?.BitDepth;
-
-            if (directPlayMethods.Count() > 0)
-            {
-                string audioCodec = audioStream?.Codec;
-
-                // Make sure audio codec profiles are satisfied
-                var conditions = new List<ProfileCondition>();
-                foreach (var i in options.Profile.CodecProfiles)
-                {
-                    if (i.Type == CodecType.Audio && i.ContainsAnyCodec(audioCodec, item.Container))
-                    {
-                        bool applyConditions = true;
-                        foreach (ProfileCondition applyCondition in i.ApplyConditions)
-                        {
-                            if (!ConditionProcessor.IsAudioConditionSatisfied(applyCondition, inputAudioChannels, inputAudioBitrate, inputAudioSampleRate, inputAudioBitDepth))
-                            {
-                                LogConditionFailure(options.Profile, "AudioCodecProfile", applyCondition, item);
-                                applyConditions = false;
-                                break;
-                            }
-                        }
-
-                        if (applyConditions)
-                        {
-                            conditions.AddRange(i.Conditions);
-                        }
-                    }
-                }
-
-                bool all = true;
-                foreach (ProfileCondition c in conditions)
-                {
-                    if (!ConditionProcessor.IsAudioConditionSatisfied(c, inputAudioChannels, inputAudioBitrate, inputAudioSampleRate, inputAudioBitDepth))
-                    {
-                        LogConditionFailure(options.Profile, "AudioCodecProfile", c, item);
-                        var transcodeReason = GetTranscodeReasonForFailedCondition(c);
-                        if (transcodeReason.HasValue)
-                        {
-                            transcodeReasons.Add(transcodeReason.Value);
-                        }
-                        all = false;
-                        break;
-                    }
-                }
-
-                if (all)
-                {
-                    if (directPlayMethods.Contains(PlayMethod.DirectStream))
-                    {
-                        playlistItem.PlayMethod = PlayMethod.DirectStream;
-                    }
-
-                    playlistItem.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, item.Path, options.Profile, DlnaProfileType.Audio);
-
-                    return playlistItem;
-                }
-            }
-
-            TranscodingProfile transcodingProfile = null;
-            foreach (var i in options.Profile.TranscodingProfiles)
-            {
-                if (i.Type == playlistItem.MediaType
-                    && i.Context == options.Context
-                    && _transcoderSupport.CanEncodeToAudioCodec(i.AudioCodec ?? i.Container))
-                {
-                    transcodingProfile = i;
-                    break;
-                }
-            }
-
-            if (transcodingProfile != null)
-            {
-                if (!item.SupportsTranscoding)
-                {
-                    return null;
-                }
-
-                SetStreamInfoOptionsFromTranscodingProfile(playlistItem, transcodingProfile);
-
-                var audioCodecProfiles = new List<CodecProfile>();
-                foreach (var i in options.Profile.CodecProfiles)
-                {
-                    if (i.Type == CodecType.Audio && i.ContainsAnyCodec(transcodingProfile.AudioCodec, transcodingProfile.Container))
-                    {
-                        audioCodecProfiles.Add(i);
-                    }
-
-                    if (audioCodecProfiles.Count >= 1) break;
-                }
-
-                var audioTranscodingConditions = new List<ProfileCondition>();
-                foreach (var i in audioCodecProfiles)
-                {
-                    bool applyConditions = true;
-                    foreach (var applyCondition in i.ApplyConditions)
-                    {
-                        if (!ConditionProcessor.IsAudioConditionSatisfied(applyCondition, inputAudioChannels, inputAudioBitrate, inputAudioSampleRate, inputAudioBitDepth))
-                        {
-                            LogConditionFailure(options.Profile, "AudioCodecProfile", applyCondition, item);
-                            applyConditions = false;
-                            break;
-                        }
-                    }
-
-                    if (applyConditions)
-                    {
-                        foreach (ProfileCondition c in i.Conditions)
-                        {
-                            audioTranscodingConditions.Add(c);
-                        }
-                    }
-                }
-
-                ApplyTranscodingConditions(playlistItem, audioTranscodingConditions, null, true, true);
-
-                // Honor requested max channels
-                playlistItem.GlobalMaxAudioChannels = options.MaxAudioChannels;
-
-                var configuredBitrate = options.GetMaxBitrate(true);
-
-                long transcodingBitrate = options.AudioTranscodingBitrate ??
-                    (options.Context == EncodingContext.Streaming ? options.Profile.MusicStreamingTranscodingBitrate : null) ??
-                    configuredBitrate ??
-                    128000;
-
-                if (configuredBitrate.HasValue)
-                {
-                    transcodingBitrate = Math.Min(configuredBitrate.Value, transcodingBitrate);
-                }
-
-                var longBitrate = Math.Min(transcodingBitrate, playlistItem.AudioBitrate ?? transcodingBitrate);
-                playlistItem.AudioBitrate = longBitrate > int.MaxValue ? int.MaxValue : Convert.ToInt32(longBitrate);
-            }
-
-            playlistItem.TranscodeReasons = transcodeReasons.ToArray();
-            return playlistItem;
-        }
-
-        private static long? GetBitrateForDirectPlayCheck(MediaSourceInfo item, AudioOptions options, bool isAudio)
-        {
-            if (item.Protocol == MediaProtocol.File)
-            {
-                return options.Profile.MaxStaticBitrate;
-            }
-
-            return options.GetMaxBitrate(isAudio);
-        }
-
-        private (IEnumerable<PlayMethod>, IEnumerable<TranscodeReason>) GetAudioDirectPlayMethods(MediaSourceInfo item, MediaStream audioStream, AudioOptions options)
-        {
-            DirectPlayProfile directPlayProfile = options.Profile.DirectPlayProfiles
+            var directPlayProfile = options.Profile.DirectPlayProfiles
                 .FirstOrDefault(x => x.Type == DlnaProfileType.Audio && IsAudioDirectPlaySupported(x, item, audioStream));
 
-            if (directPlayProfile == null)
+            TranscodeReason transcodeReasons = 0;
+            if (directPlayProfile is null)
             {
-                _logger.LogInformation("Profile: {0}, No direct play profiles found for Path: {1}",
+                _logger.LogDebug(
+                    "Profile: {0}, No audio direct play profiles found for {1} with codec {2}",
                     options.Profile.Name ?? "Unknown Profile",
-                    item.Path ?? "Unknown path");
+                    item.Path ?? "Unknown path",
+                    audioStream.Codec ?? "Unknown codec");
 
-                return (Enumerable.Empty<PlayMethod>(), GetTranscodeReasonsFromDirectPlayProfile(item, null, audioStream, options.Profile.DirectPlayProfiles));
-            }
+                var directStreamProfile = options.Profile.DirectPlayProfiles
+                    .FirstOrDefault(x => x.Type == DlnaProfileType.Audio && IsAudioDirectStreamSupported(x, item, audioStream));
 
-            var playMethods = new List<PlayMethod>();
-            var transcodeReasons = new List<TranscodeReason>();
-
-            // While options takes the network and other factors into account. Only applies to direct stream
-            if (item.SupportsDirectStream)
-            {
-                if (IsAudioEligibleForDirectPlay(item, options.GetMaxBitrate(true) ?? 0, PlayMethod.DirectStream))
+                if (directStreamProfile is not null)
                 {
-                    if (options.EnableDirectStream)
-                    {
-                        playMethods.Add(PlayMethod.DirectStream);
-                    }
+                    directPlayProfile = directStreamProfile;
+                    transcodeReasons |= TranscodeReason.ContainerNotSupported;
                 }
                 else
                 {
-                    transcodeReasons.Add(TranscodeReason.ContainerBitrateExceedsLimit);
+                    return (null, null, GetTranscodeReasonsFromDirectPlayProfile(item, null, audioStream, options.Profile.DirectPlayProfiles));
                 }
             }
 
             // The profile describes what the device supports
             // If device requirements are satisfied then allow both direct stream and direct play
-            if (item.SupportsDirectPlay)
+            // Note: As of 10.10 codebase, SupportsDirectPlay is always true because the MediaSourceInfo initializes this key as true
+            // Need to check additionally for current transcode reasons
+            if (item.SupportsDirectPlay && transcodeReasons == 0)
             {
-                if (IsAudioEligibleForDirectPlay(item, GetBitrateForDirectPlayCheck(item, options, true) ?? 0, PlayMethod.DirectPlay))
+                if (!IsBitrateLimitExceeded(item, options.GetMaxBitrate(true) ?? 0))
                 {
                     if (options.EnableDirectPlay)
                     {
-                        playMethods.Add(PlayMethod.DirectPlay);
+                        return (directPlayProfile, PlayMethod.DirectPlay, 0);
                     }
                 }
                 else
                 {
-                    transcodeReasons.Add(TranscodeReason.ContainerBitrateExceedsLimit);
+                    transcodeReasons |= TranscodeReason.ContainerBitrateExceedsLimit;
                 }
             }
 
-
-            if (playMethods.Count > 0)
+            // While options takes the network and other factors into account. Only applies to direct stream
+            if (item.SupportsDirectStream)
             {
-                transcodeReasons.Clear();
-            }
-            else
-            {
-                transcodeReasons = transcodeReasons.Distinct().ToList();
+                if (!IsBitrateLimitExceeded(item, options.GetMaxBitrate(true) ?? 0))
+                {
+                    // Note: as of 10.10 codebase, the options.EnableDirectStream is always false due to
+                    // "direct-stream http streaming is currently broken"
+                    // Don't check that option for audio as we always assume that is supported
+                    if (transcodeReasons == TranscodeReason.ContainerNotSupported)
+                    {
+                        return (directPlayProfile, PlayMethod.DirectStream, transcodeReasons);
+                    }
+                }
+                else
+                {
+                    transcodeReasons |= TranscodeReason.ContainerBitrateExceedsLimit;
+                }
             }
 
-            return (playMethods, transcodeReasons);
+            return (directPlayProfile, null, transcodeReasons);
         }
 
-        private static List<TranscodeReason> GetTranscodeReasonsFromDirectPlayProfile(MediaSourceInfo item, MediaStream videoStream, MediaStream audioStream, IEnumerable<DirectPlayProfile> directPlayProfiles)
+        private static TranscodeReason GetTranscodeReasonsFromDirectPlayProfile(MediaSourceInfo item, MediaStream? videoStream, MediaStream audioStream, IEnumerable<DirectPlayProfile> directPlayProfiles)
         {
+            var mediaType = videoStream is null ? DlnaProfileType.Audio : DlnaProfileType.Video;
+
             var containerSupported = false;
             var audioSupported = false;
             var videoSupported = false;
@@ -518,13 +506,13 @@ namespace MediaBrowser.Model.Dlna
             foreach (var profile in directPlayProfiles)
             {
                 // Check container type
-                if (profile.SupportsContainer(item.Container))
+                if (profile.Type == mediaType && profile.SupportsContainer(item.Container))
                 {
                     containerSupported = true;
 
-                    videoSupported = videoStream != null && profile.SupportsVideoCodec(videoStream.Codec);
+                    videoSupported = videoStream is null || profile.SupportsVideoCodec(videoStream.Codec);
 
-                    audioSupported = audioStream != null && profile.SupportsAudioCodec(audioStream.Codec);
+                    audioSupported = audioStream is null || profile.SupportsAudioCodec(audioStream.Codec);
 
                     if (videoSupported && audioSupported)
                     {
@@ -533,29 +521,28 @@ namespace MediaBrowser.Model.Dlna
                 }
             }
 
-            var list = new List<TranscodeReason>();
+            TranscodeReason reasons = 0;
             if (!containerSupported)
             {
-                list.Add(TranscodeReason.ContainerNotSupported);
+                reasons |= TranscodeReason.ContainerNotSupported;
             }
 
-            if (videoStream != null && !videoSupported)
+            if (!videoSupported)
             {
-                list.Add(TranscodeReason.VideoCodecNotSupported);
+                reasons |= TranscodeReason.VideoCodecNotSupported;
             }
 
-            if (audioStream != null && !audioSupported)
+            if (!audioSupported)
             {
-                list.Add(TranscodeReason.AudioCodecNotSupported);
+                reasons |= TranscodeReason.AudioCodecNotSupported;
             }
 
-            return list;
+            return reasons;
         }
 
         private static int? GetDefaultSubtitleStreamIndex(MediaSourceInfo item, SubtitleProfile[] subtitleProfiles)
         {
             int highestScore = -1;
-
             foreach (var stream in item.MediaStreams)
             {
                 if (stream.Type == MediaStreamType.Subtitle
@@ -566,7 +553,7 @@ namespace MediaBrowser.Model.Dlna
                 }
             }
 
-            var topStreams = new List<MediaStream>();
+            List<MediaStream> topStreams = [];
             foreach (var stream in item.MediaStreams)
             {
                 if (stream.Type == MediaStreamType.Subtitle && stream.Score.HasValue && stream.Score.Value == highestScore)
@@ -582,7 +569,7 @@ namespace MediaBrowser.Model.Dlna
                 {
                     foreach (var profile in subtitleProfiles)
                     {
-                        if (profile.Method == SubtitleDeliveryMethod.External && StringHelper.EqualsIgnoreCase(profile.Format, stream.Codec))
+                        if (profile.Method == SubtitleDeliveryMethod.External && string.Equals(profile.Format, stream.Codec, StringComparison.OrdinalIgnoreCase))
                         {
                             return stream.Index;
                         }
@@ -594,59 +581,64 @@ namespace MediaBrowser.Model.Dlna
             return item.DefaultSubtitleStreamIndex;
         }
 
-        private static void SetStreamInfoOptionsFromTranscodingProfile(StreamInfo playlistItem, TranscodingProfile transcodingProfile)
+        private static void SetStreamInfoOptionsFromTranscodingProfile(MediaSourceInfo item, StreamInfo playlistItem, TranscodingProfile transcodingProfile)
         {
-            if (string.IsNullOrEmpty(transcodingProfile.AudioCodec))
+            var container = transcodingProfile.Container;
+            var protocol = transcodingProfile.Protocol;
+
+            item.TranscodingContainer = container;
+            item.TranscodingSubProtocol = protocol;
+
+            if (playlistItem.PlayMethod == PlayMethod.Transcode)
             {
-                playlistItem.AudioCodecs = Array.Empty<string>();
-            }
-            else
-            {
-                playlistItem.AudioCodecs = transcodingProfile.AudioCodec.Split(',');
+                playlistItem.Container = container;
+                playlistItem.SubProtocol = protocol;
             }
 
-            playlistItem.Container = transcodingProfile.Container;
-            playlistItem.EstimateContentLength = transcodingProfile.EstimateContentLength;
             playlistItem.TranscodeSeekInfo = transcodingProfile.TranscodeSeekInfo;
+            if (int.TryParse(transcodingProfile.MaxAudioChannels, CultureInfo.InvariantCulture, out int transcodingMaxAudioChannels))
+            {
+                playlistItem.TranscodingMaxAudioChannels = transcodingMaxAudioChannels;
+            }
 
-            if (string.IsNullOrEmpty(transcodingProfile.VideoCodec))
-            {
-                playlistItem.VideoCodecs = Array.Empty<string>();
-            }
-            else
-            {
-                playlistItem.VideoCodecs = transcodingProfile.VideoCodec.Split(',');
-            }
+            playlistItem.EstimateContentLength = transcodingProfile.EstimateContentLength;
 
             playlistItem.CopyTimestamps = transcodingProfile.CopyTimestamps;
             playlistItem.EnableSubtitlesInManifest = transcodingProfile.EnableSubtitlesInManifest;
             playlistItem.EnableMpegtsM2TsMode = transcodingProfile.EnableMpegtsM2TsMode;
 
             playlistItem.BreakOnNonKeyFrames = transcodingProfile.BreakOnNonKeyFrames;
+            playlistItem.EnableAudioVbrEncoding = transcodingProfile.EnableAudioVbrEncoding;
 
             if (transcodingProfile.MinSegments > 0)
             {
                 playlistItem.MinSegments = transcodingProfile.MinSegments;
             }
+
             if (transcodingProfile.SegmentLength > 0)
             {
                 playlistItem.SegmentLength = transcodingProfile.SegmentLength;
             }
-            playlistItem.SubProtocol = transcodingProfile.Protocol;
-
-            if (!string.IsNullOrEmpty(transcodingProfile.MaxAudioChannels)
-                && int.TryParse(transcodingProfile.MaxAudioChannels, NumberStyles.Any, CultureInfo.InvariantCulture, out int transcodingMaxAudioChannels))
-            {
-                playlistItem.TranscodingMaxAudioChannels = transcodingMaxAudioChannels;
-            }
         }
 
-        private StreamInfo BuildVideoItem(MediaSourceInfo item, VideoOptions options)
+        private static void SetStreamInfoOptionsFromDirectPlayProfile(MediaOptions options, MediaSourceInfo item, StreamInfo playlistItem, DirectPlayProfile? directPlayProfile)
         {
-            if (item == null)
-            {
-                throw new ArgumentNullException(nameof(item));
-            }
+            var container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, options.Profile, DlnaProfileType.Video, directPlayProfile);
+            var protocol = MediaStreamProtocol.http;
+
+            item.TranscodingContainer = container;
+            item.TranscodingSubProtocol = protocol;
+
+            playlistItem.Container = container;
+            playlistItem.SubProtocol = protocol;
+
+            playlistItem.VideoCodecs = [item.VideoStream.Codec];
+            playlistItem.AudioCodecs = ContainerHelper.Split(directPlayProfile?.AudioCodec);
+        }
+
+        private StreamInfo BuildVideoItem(MediaSourceInfo item, MediaOptions options)
+        {
+            ArgumentNullException.ThrowIfNull(item);
 
             StreamInfo playlistItem = new StreamInfo
             {
@@ -655,250 +647,523 @@ namespace MediaBrowser.Model.Dlna
                 MediaSource = item,
                 RunTimeTicks = item.RunTimeTicks,
                 Context = options.Context,
-                DeviceProfile = options.Profile
+                DeviceProfile = options.Profile,
+                SubtitleStreamIndex = options.SubtitleStreamIndex ?? GetDefaultSubtitleStreamIndex(item, options.Profile.SubtitleProfiles),
+                AlwaysBurnInSubtitleWhenTranscoding = options.AlwaysBurnInSubtitleWhenTranscoding
             };
 
-            playlistItem.SubtitleStreamIndex = options.SubtitleStreamIndex ?? GetDefaultSubtitleStreamIndex(item, options.Profile.SubtitleProfiles);
             var subtitleStream = playlistItem.SubtitleStreamIndex.HasValue ? item.GetMediaStream(MediaStreamType.Subtitle, playlistItem.SubtitleStreamIndex.Value) : null;
 
             var audioStream = item.GetDefaultAudioStream(options.AudioStreamIndex ?? item.DefaultAudioStreamIndex);
-            if (audioStream != null)
+            if (audioStream is not null)
             {
                 playlistItem.AudioStreamIndex = audioStream.Index;
             }
 
+            // Collect candidate audio streams
+            ICollection<MediaStream> candidateAudioStreams = audioStream is null ? [] : [audioStream];
+            if (!options.AudioStreamIndex.HasValue || options.AudioStreamIndex < 0)
+            {
+                if (audioStream?.IsDefault == true)
+                {
+                    candidateAudioStreams = item.MediaStreams.Where(stream => stream.Type == MediaStreamType.Audio && stream.IsDefault).ToArray();
+                }
+                else
+                {
+                    candidateAudioStreams = item.MediaStreams.Where(stream => stream.Type == MediaStreamType.Audio && stream.Language == audioStream?.Language).ToArray();
+                }
+            }
+
             var videoStream = item.VideoStream;
 
-            // TODO: This doesn't accout for situation of device being able to handle media bitrate, but wifi connection not fast enough
-            var directPlayEligibilityResult = IsEligibleForDirectPlay(item, GetBitrateForDirectPlayCheck(item, options, true) ?? 0, subtitleStream, options, PlayMethod.DirectPlay);
-            var directStreamEligibilityResult = IsEligibleForDirectPlay(item, options.GetMaxBitrate(false) ?? 0, subtitleStream, options, PlayMethod.DirectStream);
-            bool isEligibleForDirectPlay = options.EnableDirectPlay && (options.ForceDirectPlay || directPlayEligibilityResult.Item1);
-            bool isEligibleForDirectStream = options.EnableDirectStream && (options.ForceDirectStream || directStreamEligibilityResult.Item1);
+            var bitrateLimitExceeded = IsBitrateLimitExceeded(item, options.GetMaxBitrate(false) ?? 0);
+            var isEligibleForDirectPlay = options.EnableDirectPlay && (options.ForceDirectPlay || !bitrateLimitExceeded);
+            var isEligibleForDirectStream = options.EnableDirectStream && (options.ForceDirectStream || !bitrateLimitExceeded);
+            TranscodeReason transcodeReasons = 0;
 
-            _logger.LogInformation("Profile: {0}, Path: {1}, isEligibleForDirectPlay: {2}, isEligibleForDirectStream: {3}",
+            // Force transcode or remux for BD/DVD folders
+            if (item.VideoType == VideoType.Dvd || item.VideoType == VideoType.BluRay)
+            {
+                isEligibleForDirectPlay = false;
+            }
+
+            if (bitrateLimitExceeded)
+            {
+                transcodeReasons = TranscodeReason.ContainerBitrateExceedsLimit;
+            }
+
+            _logger.LogDebug(
+                "Profile: {0}, Path: {1}, isEligibleForDirectPlay: {2}, isEligibleForDirectStream: {3}",
                 options.Profile.Name ?? "Unknown Profile",
                 item.Path ?? "Unknown path",
                 isEligibleForDirectPlay,
                 isEligibleForDirectStream);
 
-            var transcodeReasons = new List<TranscodeReason>();
-
+            DirectPlayProfile? directPlayProfile = null;
             if (isEligibleForDirectPlay || isEligibleForDirectStream)
             {
                 // See if it can be direct played
-                var directPlayInfo = GetVideoDirectPlayProfile(options, item, videoStream, audioStream, isEligibleForDirectPlay, isEligibleForDirectStream);
-                var directPlay = directPlayInfo.Item1;
+                var directPlayInfo = GetVideoDirectPlayProfile(options, item, videoStream, audioStream, candidateAudioStreams, subtitleStream, isEligibleForDirectPlay, isEligibleForDirectStream);
+                var directPlay = directPlayInfo.PlayMethod;
+                transcodeReasons |= directPlayInfo.TranscodeReasons;
 
-                if (directPlay != null)
+                if (directPlay.HasValue)
                 {
+                    directPlayProfile = directPlayInfo.Profile;
                     playlistItem.PlayMethod = directPlay.Value;
-                    playlistItem.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, item.Path, options.Profile, DlnaProfileType.Video);
+                    playlistItem.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, options.Profile, DlnaProfileType.Video, directPlayProfile);
+                    var videoCodec = videoStream?.Codec;
+                    playlistItem.VideoCodecs = videoCodec is null ? [] : [videoCodec];
 
-                    if (subtitleStream != null)
+                    if (directPlay == PlayMethod.DirectPlay)
                     {
-                        var subtitleProfile = GetSubtitleProfile(item, subtitleStream, options.Profile.SubtitleProfiles, directPlay.Value, _transcoderSupport, item.Container, null);
+                        playlistItem.SubProtocol = MediaStreamProtocol.http;
+
+                        var audioStreamIndex = directPlayInfo.AudioStreamIndex ?? audioStream?.Index;
+                        if (audioStreamIndex.HasValue)
+                        {
+                            playlistItem.AudioStreamIndex = audioStreamIndex;
+                            var audioCodec = item.GetMediaStream(MediaStreamType.Audio, audioStreamIndex.Value)?.Codec;
+                            playlistItem.AudioCodecs = audioCodec is null ? [] : [audioCodec];
+                        }
+                    }
+                    else if (directPlay == PlayMethod.DirectStream)
+                    {
+                        playlistItem.AudioStreamIndex = audioStream?.Index;
+                        if (audioStream is not null)
+                        {
+                            playlistItem.AudioCodecs = ContainerHelper.Split(directPlayProfile?.AudioCodec);
+                        }
+
+                        SetStreamInfoOptionsFromDirectPlayProfile(options, item, playlistItem, directPlayProfile);
+                        BuildStreamVideoItem(playlistItem, options, item, videoStream, audioStream, candidateAudioStreams, directPlayProfile?.Container, directPlayProfile?.VideoCodec, directPlayProfile?.AudioCodec);
+                    }
+
+                    if (subtitleStream is not null)
+                    {
+                        var subtitleProfile = GetSubtitleProfile(item, subtitleStream, options.Profile.SubtitleProfiles, directPlay.Value, _transcoderSupport, directPlayProfile?.Container, null);
 
                         playlistItem.SubtitleDeliveryMethod = subtitleProfile.Method;
                         playlistItem.SubtitleFormat = subtitleProfile.Format;
                     }
-
-                    return playlistItem;
                 }
 
-                transcodeReasons.AddRange(directPlayInfo.Item2);
+                _logger.LogDebug(
+                    "DirectPlay Result for Profile: {0}, Path: {1}, PlayMethod: {2}, AudioStreamIndex: {3}, SubtitleStreamIndex: {4}, Reasons: {5}",
+                    options.Profile.Name ?? "Anonymous Profile",
+                    item.Path ?? "Unknown path",
+                    directPlayInfo.PlayMethod,
+                    directPlayInfo.AudioStreamIndex ?? audioStream?.Index,
+                    playlistItem.SubtitleStreamIndex,
+                    directPlayInfo.TranscodeReasons);
             }
 
-            if (directPlayEligibilityResult.Item2.HasValue)
+            playlistItem.TranscodeReasons = transcodeReasons;
+
+            if (playlistItem.PlayMethod != PlayMethod.DirectStream && playlistItem.PlayMethod != PlayMethod.DirectPlay)
             {
-                transcodeReasons.Add(directPlayEligibilityResult.Item2.Value);
-            }
+                // Can't direct play, find the transcoding profile
+                // If we do this for direct-stream we will overwrite the info
+                var (transcodingProfile, playMethod) = GetVideoTranscodeProfile(item, options, videoStream, audioStream, playlistItem);
 
-            if (directStreamEligibilityResult.Item2.HasValue)
-            {
-                transcodeReasons.Add(directStreamEligibilityResult.Item2.Value);
-            }
-
-            // Can't direct play, find the transcoding profile
-            TranscodingProfile transcodingProfile = null;
-            foreach (var i in options.Profile.TranscodingProfiles)
-            {
-                if (i.Type == playlistItem.MediaType && i.Context == options.Context)
+                if (transcodingProfile is not null && playMethod.HasValue)
                 {
-                    transcodingProfile = i;
-                    break;
-                }
-            }
+                    SetStreamInfoOptionsFromTranscodingProfile(item, playlistItem, transcodingProfile);
 
-            if (transcodingProfile != null)
-            {
-                if (!item.SupportsTranscoding)
-                {
-                    return null;
-                }
+                    BuildStreamVideoItem(playlistItem, options, item, videoStream, audioStream, candidateAudioStreams, transcodingProfile.Container, transcodingProfile.VideoCodec, transcodingProfile.AudioCodec);
 
-                if (subtitleStream != null)
-                {
-                    var subtitleProfile = GetSubtitleProfile(item, subtitleStream, options.Profile.SubtitleProfiles, PlayMethod.Transcode, _transcoderSupport, transcodingProfile.Container, transcodingProfile.Protocol);
+                    playlistItem.PlayMethod = PlayMethod.Transcode;
 
-                    playlistItem.SubtitleDeliveryMethod = subtitleProfile.Method;
-                    playlistItem.SubtitleFormat = subtitleProfile.Format;
-                    playlistItem.SubtitleCodecs = new[] { subtitleProfile.Format };
-                }
-
-                playlistItem.PlayMethod = PlayMethod.Transcode;
-
-                SetStreamInfoOptionsFromTranscodingProfile(playlistItem, transcodingProfile);
-
-                var isFirstAppliedCodecProfile = true;
-                foreach (var i in options.Profile.CodecProfiles)
-                {
-                    if (i.Type == CodecType.Video && i.ContainsAnyCodec(transcodingProfile.VideoCodec, transcodingProfile.Container))
+                    if (subtitleStream is not null)
                     {
-                        bool applyConditions = true;
-                        foreach (ProfileCondition applyCondition in i.ApplyConditions)
-                        {
-                            int? width = videoStream?.Width;
-                            int? height = videoStream?.Height;
-                            int? bitDepth = videoStream?.BitDepth;
-                            int? videoBitrate = videoStream?.BitRate;
-                            double? videoLevel = videoStream?.Level;
-                            string videoProfile = videoStream?.Profile;
-                            float videoFramerate = videoStream == null ? 0 : videoStream.AverageFrameRate ?? videoStream.AverageFrameRate ?? 0;
-                            bool? isAnamorphic = videoStream?.IsAnamorphic;
-                            bool? isInterlaced = videoStream?.IsInterlaced;
-                            string videoCodecTag = videoStream?.CodecTag;
-                            bool? isAvc = videoStream?.IsAVC;
-
-                            TransportStreamTimestamp? timestamp = videoStream == null ? TransportStreamTimestamp.None : item.Timestamp;
-                            int? packetLength = videoStream?.PacketLength;
-                            int? refFrames = videoStream?.RefFrames;
-
-                            int? numAudioStreams = item.GetStreamCount(MediaStreamType.Audio);
-                            int? numVideoStreams = item.GetStreamCount(MediaStreamType.Video);
-
-                            if (!ConditionProcessor.IsVideoConditionSatisfied(applyCondition, width, height, bitDepth, videoBitrate, videoProfile, videoLevel, videoFramerate, packetLength, timestamp, isAnamorphic, isInterlaced, refFrames, numVideoStreams, numAudioStreams, videoCodecTag, isAvc))
-                            {
-                                //LogConditionFailure(options.Profile, "VideoCodecProfile.ApplyConditions", applyCondition, item);
-                                applyConditions = false;
-                                break;
-                            }
-                        }
-
-                        if (applyConditions)
-                        {
-                            var transcodingVideoCodecs = ContainerProfile.SplitValue(transcodingProfile.VideoCodec);
-                            foreach (var transcodingVideoCodec in transcodingVideoCodecs)
-                            {
-                                if (i.ContainsAnyCodec(transcodingVideoCodec, transcodingProfile.Container))
-                                {
-                                    ApplyTranscodingConditions(playlistItem, i.Conditions, transcodingVideoCodec, true, isFirstAppliedCodecProfile);
-                                    isFirstAppliedCodecProfile = false;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Honor requested max channels
-                playlistItem.GlobalMaxAudioChannels = options.MaxAudioChannels;
-
-                int audioBitrate = GetAudioBitrate(playlistItem.SubProtocol, options.GetMaxBitrate(false) ?? 0, playlistItem.TargetAudioCodec, audioStream, playlistItem);
-                playlistItem.AudioBitrate = Math.Min(playlistItem.AudioBitrate ?? audioBitrate, audioBitrate);
-
-                isFirstAppliedCodecProfile = true;
-                foreach (var i in options.Profile.CodecProfiles)
-                {
-                    if (i.Type == CodecType.VideoAudio && i.ContainsAnyCodec(transcodingProfile.AudioCodec, transcodingProfile.Container))
-                    {
-                        bool applyConditions = true;
-                        foreach (ProfileCondition applyCondition in i.ApplyConditions)
-                        {
-                            bool? isSecondaryAudio = audioStream == null ? null : item.IsSecondaryAudio(audioStream);
-                            int? inputAudioBitrate = audioStream == null ? null : audioStream.BitRate;
-                            int? audioChannels = audioStream == null ? null : audioStream.Channels;
-                            string audioProfile = audioStream == null ? null : audioStream.Profile;
-                            int? inputAudioSampleRate = audioStream == null ? null : audioStream.SampleRate;
-                            int? inputAudioBitDepth = audioStream == null ? null : audioStream.BitDepth;
-
-                            if (!ConditionProcessor.IsVideoAudioConditionSatisfied(applyCondition, audioChannels, inputAudioBitrate, inputAudioSampleRate, inputAudioBitDepth, audioProfile, isSecondaryAudio))
-                            {
-                                //LogConditionFailure(options.Profile, "VideoCodecProfile.ApplyConditions", applyCondition, item);
-                                applyConditions = false;
-                                break;
-                            }
-                        }
-
-                        if (applyConditions)
-                        {
-                            var transcodingAudioCodecs = ContainerProfile.SplitValue(transcodingProfile.AudioCodec);
-                            foreach (var transcodingAudioCodec in transcodingAudioCodecs)
-                            {
-                                if (i.ContainsAnyCodec(transcodingAudioCodec, transcodingProfile.Container))
-                                {
-                                    ApplyTranscodingConditions(playlistItem, i.Conditions, transcodingAudioCodec, true, isFirstAppliedCodecProfile);
-                                    isFirstAppliedCodecProfile = false;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                var maxBitrateSetting = options.GetMaxBitrate(false);
-                // Honor max rate
-                if (maxBitrateSetting.HasValue)
-                {
-                    var availableBitrateForVideo = maxBitrateSetting.Value;
-
-                    if (playlistItem.AudioBitrate.HasValue)
-                    {
-                        availableBitrateForVideo -= playlistItem.AudioBitrate.Value;
+                        var subtitleProfile = GetSubtitleProfile(item, subtitleStream, options.Profile.SubtitleProfiles, PlayMethod.Transcode, _transcoderSupport, transcodingProfile.Container, transcodingProfile.Protocol);
+                        playlistItem.SubtitleDeliveryMethod = subtitleProfile.Method;
+                        playlistItem.SubtitleFormat = subtitleProfile.Format;
+                        playlistItem.SubtitleCodecs = [subtitleProfile.Format];
                     }
 
-                    // Make sure the video bitrate is lower than bitrate settings but at least 64k
-                    long currentValue = playlistItem.VideoBitrate ?? availableBitrateForVideo;
-                    var longBitrate = Math.Max(Math.Min(availableBitrateForVideo, currentValue), 64000);
-                    playlistItem.VideoBitrate = longBitrate >= int.MaxValue ? int.MaxValue : Convert.ToInt32(longBitrate);
+                    if ((playlistItem.TranscodeReasons & (VideoReasons | TranscodeReason.ContainerBitrateExceedsLimit)) != 0)
+                    {
+                        ApplyTranscodingConditions(playlistItem, transcodingProfile.Conditions, null, true, true);
+                    }
                 }
             }
 
-            playlistItem.TranscodeReasons = transcodeReasons.ToArray();
+            _logger.LogDebug(
+                "StreamBuilder.BuildVideoItem( Profile={0}, Path={1}, AudioStreamIndex={2}, SubtitleStreamIndex={3} ) => ( PlayMethod={4}, TranscodeReason={5} ) {6}",
+                options.Profile.Name ?? "Anonymous Profile",
+                item.Path ?? "Unknown path",
+                options.AudioStreamIndex,
+                options.SubtitleStreamIndex,
+                playlistItem.PlayMethod,
+                playlistItem.TranscodeReasons,
+                playlistItem.ToUrl("media:", "<token>"));
 
+            item.Container = NormalizeMediaSourceFormatIntoSingleContainer(item.Container, options.Profile, DlnaProfileType.Video, directPlayProfile);
             return playlistItem;
         }
 
-        private static int GetDefaultAudioBitrateIfUnknown(MediaStream audioStream)
+        private (TranscodingProfile? Profile, PlayMethod? PlayMethod) GetVideoTranscodeProfile(
+            MediaSourceInfo item,
+            MediaOptions options,
+            MediaStream? videoStream,
+            MediaStream? audioStream,
+            StreamInfo playlistItem)
         {
-            if ((audioStream.Channels ?? 0) >= 6)
+            if (!(item.SupportsTranscoding || item.SupportsDirectStream))
             {
-                return 384000;
+                return (null, null);
+            }
+
+            var transcodingProfiles = options.Profile.TranscodingProfiles
+                .Where(i => i.Type == playlistItem.MediaType && i.Context == options.Context);
+
+            if (item.UseMostCompatibleTranscodingProfile)
+            {
+                transcodingProfiles = transcodingProfiles.Where(i => string.Equals(i.Container, "ts", StringComparison.OrdinalIgnoreCase));
+            }
+
+            var videoCodec = videoStream?.Codec;
+            float videoFramerate = videoStream?.ReferenceFrameRate ?? 0;
+            TransportStreamTimestamp? timestamp = videoStream is null ? TransportStreamTimestamp.None : item.Timestamp;
+            int? numAudioStreams = item.GetStreamCount(MediaStreamType.Audio);
+            int? numVideoStreams = item.GetStreamCount(MediaStreamType.Video);
+
+            var audioCodec = audioStream?.Codec;
+            var audioProfile = audioStream?.Profile;
+            var audioChannels = audioStream?.Channels;
+            var audioBitrate = audioStream?.BitRate;
+            var audioSampleRate = audioStream?.SampleRate;
+            var audioBitDepth = audioStream?.BitDepth;
+
+            var analyzedProfiles = transcodingProfiles
+                .Select(transcodingProfile =>
+                {
+                    var rank = (Video: 3, Audio: 3);
+
+                    var container = transcodingProfile.Container;
+
+                    if (options.AllowVideoStreamCopy)
+                    {
+                        if (ContainerHelper.ContainsContainer(transcodingProfile.VideoCodec, videoCodec))
+                        {
+                            var appliedVideoConditions = options.Profile.CodecProfiles
+                                .Where(i => i.Type == CodecType.Video &&
+                                    i.ContainsAnyCodec(videoCodec, container) &&
+                                    i.ApplyConditions.All(applyCondition => ConditionProcessor.IsVideoConditionSatisfied(applyCondition, videoStream?.Width, videoStream?.Height, videoStream?.BitDepth, videoStream?.BitRate, videoStream?.Profile, videoStream?.VideoRangeType, videoStream?.Level, videoFramerate, videoStream?.PacketLength, timestamp, videoStream?.IsAnamorphic, videoStream?.IsInterlaced, videoStream?.RefFrames, numVideoStreams, numAudioStreams, videoStream?.CodecTag, videoStream?.IsAVC)))
+                                .Select(i =>
+                                    i.Conditions.All(condition => ConditionProcessor.IsVideoConditionSatisfied(condition, videoStream?.Width, videoStream?.Height, videoStream?.BitDepth, videoStream?.BitRate, videoStream?.Profile, videoStream?.VideoRangeType, videoStream?.Level, videoFramerate, videoStream?.PacketLength, timestamp, videoStream?.IsAnamorphic, videoStream?.IsInterlaced, videoStream?.RefFrames, numVideoStreams, numAudioStreams, videoStream?.CodecTag, videoStream?.IsAVC)));
+
+                            // An empty appliedVideoConditions means that the codec has no conditions for the current video stream
+                            var conditionsSatisfied = appliedVideoConditions.All(satisfied => satisfied);
+                            rank.Video = conditionsSatisfied ? 1 : 2;
+                        }
+                    }
+
+                    if (options.AllowAudioStreamCopy)
+                    {
+                        if (ContainerHelper.ContainsContainer(transcodingProfile.AudioCodec, audioCodec))
+                        {
+                            var appliedVideoConditions = options.Profile.CodecProfiles
+                                .Where(i => i.Type == CodecType.VideoAudio &&
+                                    i.ContainsAnyCodec(audioCodec, container) &&
+                                    i.ApplyConditions.All(applyCondition => ConditionProcessor.IsVideoAudioConditionSatisfied(applyCondition, audioChannels, audioBitrate, audioSampleRate, audioBitDepth, audioProfile, false)))
+                                .Select(i =>
+                                    i.Conditions.All(condition => ConditionProcessor.IsVideoAudioConditionSatisfied(condition, audioChannels, audioBitrate, audioSampleRate, audioBitDepth, audioProfile, false)));
+
+                            // An empty appliedVideoConditions means that the codec has no conditions for the current audio stream
+                            var conditionsSatisfied = appliedVideoConditions.All(satisfied => satisfied);
+                            rank.Audio = conditionsSatisfied ? 1 : 2;
+                        }
+                    }
+
+                    PlayMethod playMethod = PlayMethod.Transcode;
+
+                    if (rank.Video == 1)
+                    {
+                        playMethod = PlayMethod.DirectStream;
+                    }
+
+                    return (Profile: transcodingProfile, PlayMethod: playMethod, Rank: rank);
+                })
+                .OrderBy(analysis => analysis.Rank);
+
+            var profileMatch = analyzedProfiles.FirstOrDefault();
+
+            return (profileMatch.Profile, profileMatch.PlayMethod);
+        }
+
+        private void BuildStreamVideoItem(
+            StreamInfo playlistItem,
+            MediaOptions options,
+            MediaSourceInfo item,
+            MediaStream? videoStream,
+            MediaStream? audioStream,
+            IEnumerable<MediaStream> candidateAudioStreams,
+            string? container,
+            string? videoCodec,
+            string? audioCodec)
+        {
+            // Prefer matching video codecs
+            var videoCodecs = ContainerHelper.Split(videoCodec).ToList();
+
+            if (videoCodecs.Count == 0 && videoStream is not null)
+            {
+                // Add the original codec if no codec is specified
+                videoCodecs.Add(videoStream.Codec);
+            }
+
+            // Enforce HLS video codec restrictions
+            if (playlistItem.SubProtocol == MediaStreamProtocol.hls)
+            {
+                videoCodecs = videoCodecs.Where(codec => _supportedHlsVideoCodecs.Contains(codec)).ToList();
+            }
+
+            playlistItem.VideoCodecs = videoCodecs;
+
+            // Copy video codec options as a starting point, this applies to transcode and direct-stream
+            playlistItem.MaxFramerate = videoStream?.ReferenceFrameRate;
+            var qualifier = videoStream?.Codec;
+            if (videoStream?.Level is not null)
+            {
+                playlistItem.SetOption(qualifier, "level", videoStream.Level.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (videoStream?.BitDepth is not null)
+            {
+                playlistItem.SetOption(qualifier, "videobitdepth", videoStream.BitDepth.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (!string.IsNullOrEmpty(videoStream?.Profile))
+            {
+                playlistItem.SetOption(qualifier, "profile", videoStream.Profile.ToLowerInvariant());
+            }
+
+            // Prefer matching audio codecs, could do better here
+            var audioCodecs = ContainerHelper.Split(audioCodec).ToList();
+
+            if (audioCodecs.Count == 0 && audioStream is not null)
+            {
+                // Add the original codec if no codec is specified
+                audioCodecs.Add(audioStream.Codec);
+            }
+
+            // Enforce HLS audio codec restrictions
+            if (playlistItem.SubProtocol == MediaStreamProtocol.hls)
+            {
+                if (string.Equals(playlistItem.Container, "mp4", StringComparison.OrdinalIgnoreCase))
+                {
+                    audioCodecs = audioCodecs.Where(codec => _supportedHlsAudioCodecsMp4.Contains(codec)).ToList();
+                }
+                else
+                {
+                    audioCodecs = audioCodecs.Where(codec => _supportedHlsAudioCodecsTs.Contains(codec)).ToList();
+                }
+            }
+
+            var audioStreamWithSupportedCodec = candidateAudioStreams.Where(stream => ContainerHelper.ContainsContainer(audioCodecs, false, stream.Codec)).FirstOrDefault();
+
+            var directAudioStream = audioStreamWithSupportedCodec?.Channels is not null && audioStreamWithSupportedCodec.Channels.Value <= (playlistItem.TranscodingMaxAudioChannels ?? int.MaxValue) ? audioStreamWithSupportedCodec : null;
+
+            var channelsExceedsLimit = audioStreamWithSupportedCodec is not null && directAudioStream is null;
+
+            if (channelsExceedsLimit && playlistItem.TargetAudioStream is not null)
+            {
+                playlistItem.TranscodeReasons |= TranscodeReason.AudioChannelsNotSupported;
+                playlistItem.TargetAudioStream.Channels = playlistItem.TranscodingMaxAudioChannels;
+            }
+
+            playlistItem.AudioCodecs = audioCodecs;
+            if (directAudioStream is not null)
+            {
+                audioStream = directAudioStream;
+                playlistItem.AudioStreamIndex = audioStream.Index;
+                audioCodecs = [audioStream.Codec];
+                playlistItem.AudioCodecs = audioCodecs;
+
+                // Copy matching audio codec options
+                playlistItem.AudioSampleRate = audioStream.SampleRate;
+                playlistItem.SetOption(qualifier, "audiochannels", audioStream.Channels?.ToString(CultureInfo.InvariantCulture) ?? string.Empty);
+
+                if (!string.IsNullOrEmpty(audioStream.Profile))
+                {
+                    playlistItem.SetOption(audioStream.Codec, "profile", audioStream.Profile.ToLowerInvariant());
+                }
+
+                if (audioStream.Level.HasValue && audioStream.Level.Value != 0)
+                {
+                    playlistItem.SetOption(audioStream.Codec, "level", audioStream.Level.Value.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+
+            int? width = videoStream?.Width;
+            int? height = videoStream?.Height;
+            int? bitDepth = videoStream?.BitDepth;
+            int? videoBitrate = videoStream?.BitRate;
+            double? videoLevel = videoStream?.Level;
+            string? videoProfile = videoStream?.Profile;
+            VideoRangeType? videoRangeType = videoStream?.VideoRangeType;
+            float videoFramerate = videoStream is null ? 0 : videoStream.ReferenceFrameRate ?? 0;
+            bool? isAnamorphic = videoStream?.IsAnamorphic;
+            bool? isInterlaced = videoStream?.IsInterlaced;
+            string? videoCodecTag = videoStream?.CodecTag;
+            bool? isAvc = videoStream?.IsAVC;
+
+            TransportStreamTimestamp? timestamp = videoStream is null ? TransportStreamTimestamp.None : item.Timestamp;
+            int? packetLength = videoStream?.PacketLength;
+            int? refFrames = videoStream?.RefFrames;
+
+            int? numAudioStreams = item.GetStreamCount(MediaStreamType.Audio);
+            int? numVideoStreams = item.GetStreamCount(MediaStreamType.Video);
+
+            var useSubContainer = playlistItem.SubProtocol == MediaStreamProtocol.hls;
+
+            var appliedVideoConditions = options.Profile.CodecProfiles
+                .Where(i => i.Type == CodecType.Video &&
+                    i.ContainsAnyCodec(playlistItem.VideoCodecs, container, useSubContainer) &&
+                    i.ApplyConditions.All(applyCondition => ConditionProcessor.IsVideoConditionSatisfied(applyCondition, width, height, bitDepth, videoBitrate, videoProfile, videoRangeType, videoLevel, videoFramerate, packetLength, timestamp, isAnamorphic, isInterlaced, refFrames, numVideoStreams, numAudioStreams, videoCodecTag, isAvc)))
+                // Reverse codec profiles for backward compatibility - first codec profile has higher priority
+                .Reverse();
+            foreach (var condition in appliedVideoConditions)
+            {
+                foreach (var transcodingVideoCodec in playlistItem.VideoCodecs)
+                {
+                    if (condition.ContainsAnyCodec(transcodingVideoCodec, container, useSubContainer))
+                    {
+                        ApplyTranscodingConditions(playlistItem, condition.Conditions, transcodingVideoCodec, true, true);
+                        continue;
+                    }
+                }
+            }
+
+            // Honor requested max channels
+            playlistItem.GlobalMaxAudioChannels = channelsExceedsLimit ? playlistItem.TranscodingMaxAudioChannels : options.MaxAudioChannels;
+
+            int audioBitrate = GetAudioBitrate(options.GetMaxBitrate(true) ?? 0, playlistItem.TargetAudioCodec, audioStream, playlistItem);
+            playlistItem.AudioBitrate = Math.Min(playlistItem.AudioBitrate ?? audioBitrate, audioBitrate);
+
+            bool? isSecondaryAudio = audioStream is null ? null : item.IsSecondaryAudio(audioStream);
+            int? inputAudioBitrate = audioStream?.BitRate;
+            int? audioChannels = audioStream?.Channels;
+            string? audioProfile = audioStream?.Profile;
+            int? inputAudioSampleRate = audioStream?.SampleRate;
+            int? inputAudioBitDepth = audioStream?.BitDepth;
+
+            var appliedAudioConditions = options.Profile.CodecProfiles
+                .Where(i => i.Type == CodecType.VideoAudio &&
+                    i.ContainsAnyCodec(playlistItem.AudioCodecs, container) &&
+                    i.ApplyConditions.All(applyCondition => ConditionProcessor.IsVideoAudioConditionSatisfied(applyCondition, audioChannels, inputAudioBitrate, inputAudioSampleRate, inputAudioBitDepth, audioProfile, isSecondaryAudio)))
+                // Reverse codec profiles for backward compatibility - first codec profile has higher priority
+                .Reverse();
+
+            foreach (var codecProfile in appliedAudioConditions)
+            {
+                foreach (var transcodingAudioCodec in playlistItem.AudioCodecs)
+                {
+                    if (codecProfile.ContainsAnyCodec(transcodingAudioCodec, container))
+                    {
+                        ApplyTranscodingConditions(playlistItem, codecProfile.Conditions, transcodingAudioCodec, true, true);
+                        break;
+                    }
+                }
+            }
+
+            var maxBitrateSetting = options.GetMaxBitrate(false);
+            // Honor max rate
+            if (maxBitrateSetting.HasValue)
+            {
+                var availableBitrateForVideo = maxBitrateSetting.Value;
+
+                if (playlistItem.AudioBitrate.HasValue)
+                {
+                    availableBitrateForVideo -= playlistItem.AudioBitrate.Value;
+                }
+
+                // Make sure the video bitrate is lower than bitrate settings but at least 64k
+                // Don't use Math.Clamp as availableBitrateForVideo can be lower then 64k.
+                var currentValue = playlistItem.VideoBitrate ?? availableBitrateForVideo;
+                playlistItem.VideoBitrate = Math.Max(Math.Min(availableBitrateForVideo, currentValue), 64_000);
+            }
+
+            _logger.LogDebug(
+                "Transcode Result for Profile: {Profile}, Path: {Path}, PlayMethod: {PlayMethod}, AudioStreamIndex: {AudioStreamIndex}, SubtitleStreamIndex: {SubtitleStreamIndex}, Reasons: {TranscodeReason}",
+                options.Profile?.Name ?? "Anonymous Profile",
+                item.Path ?? "Unknown path",
+                playlistItem?.PlayMethod,
+                audioStream?.Index,
+                playlistItem?.SubtitleStreamIndex,
+                playlistItem?.TranscodeReasons);
+        }
+
+        private static int GetDefaultAudioBitrate(string? audioCodec, int? audioChannels)
+        {
+            if (!string.IsNullOrEmpty(audioCodec))
+            {
+                // Default to a higher bitrate for stream copy
+                if (string.Equals(audioCodec, "aac", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(audioCodec, "mp3", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(audioCodec, "ac3", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(audioCodec, "eac3", StringComparison.OrdinalIgnoreCase))
+                {
+                    if ((audioChannels ?? 0) < 2)
+                    {
+                        return 128000;
+                    }
+
+                    return (audioChannels ?? 0) >= 6 ? 640000 : 384000;
+                }
+
+                if (string.Equals(audioCodec, "flac", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(audioCodec, "alac", StringComparison.OrdinalIgnoreCase))
+                {
+                    if ((audioChannels ?? 0) < 2)
+                    {
+                        return 768000;
+                    }
+
+                    return (audioChannels ?? 0) >= 6 ? 3584000 : 1536000;
+                }
             }
 
             return 192000;
         }
 
-        private static int GetAudioBitrate(string subProtocol, long maxTotalBitrate, string[] targetAudioCodecs, MediaStream audioStream, StreamInfo item)
+        private static int GetAudioBitrate(long maxTotalBitrate, IReadOnlyList<string> targetAudioCodecs, MediaStream? audioStream, StreamInfo item)
         {
-            string targetAudioCodec = targetAudioCodecs.Length == 0 ? null : targetAudioCodecs[0];
+            string? targetAudioCodec = targetAudioCodecs.Count == 0 ? null : targetAudioCodecs[0];
 
             int? targetAudioChannels = item.GetTargetAudioChannels(targetAudioCodec);
 
             int defaultBitrate;
             int encoderAudioBitrateLimit = int.MaxValue;
 
-            if (audioStream == null)
+            if (audioStream is null)
             {
                 defaultBitrate = 192000;
             }
             else
             {
-                if (targetAudioChannels.HasValue && audioStream.Channels.HasValue && targetAudioChannels.Value < audioStream.Channels.Value)
+                if (targetAudioChannels.HasValue
+                    && audioStream.Channels.HasValue
+                    && audioStream.Channels.Value > targetAudioChannels.Value)
                 {
-                    // Reduce the bitrate if we're downmixing
-                    defaultBitrate = targetAudioChannels.Value < 2 ? 128000 : 192000;
+                    // Reduce the bitrate if we're down mixing.
+                    defaultBitrate = GetDefaultAudioBitrate(targetAudioCodec, targetAudioChannels);
+                }
+                else if (targetAudioChannels.HasValue
+                         && audioStream.Channels.HasValue
+                         && audioStream.Channels.Value <= targetAudioChannels.Value
+                         && !string.IsNullOrEmpty(audioStream.Codec)
+                         && targetAudioCodecs is not null
+                         && targetAudioCodecs.Count > 0
+                         && !targetAudioCodecs.Any(elem => string.Equals(audioStream.Codec, elem, StringComparison.OrdinalIgnoreCase)))
+                {
+                    // Shift the bitrate if we're transcoding to a different audio codec.
+                    defaultBitrate = GetDefaultAudioBitrate(targetAudioCodec, audioStream.Channels.Value);
                 }
                 else
                 {
-                    defaultBitrate = audioStream.BitRate ?? GetDefaultAudioBitrateIfUnknown(audioStream);
+                    defaultBitrate = audioStream.BitRate ?? GetDefaultAudioBitrate(targetAudioCodec, targetAudioChannels);
                 }
 
                 // Seeing webm encoding failures when source has 1 audio channel and 22k bitrate.
@@ -924,214 +1189,254 @@ namespace MediaBrowser.Model.Dlna
             {
                 return 128000;
             }
-            else if (totalBitrate <= 2000000)
+
+            if (totalBitrate <= 2000000)
             {
                 return 384000;
             }
-            else if (totalBitrate <= 3000000)
+
+            if (totalBitrate <= 3000000)
             {
                 return 448000;
             }
 
-            return 640000;
+            if (totalBitrate <= 4000000)
+            {
+                return 640000;
+            }
+
+            if (totalBitrate <= 5000000)
+            {
+                return 768000;
+            }
+
+            if (totalBitrate <= 10000000)
+            {
+                return 1536000;
+            }
+
+            if (totalBitrate <= 15000000)
+            {
+                return 2304000;
+            }
+
+            if (totalBitrate <= 20000000)
+            {
+                return 3584000;
+            }
+
+            return 7168000;
         }
 
-        private (PlayMethod?, List<TranscodeReason>) GetVideoDirectPlayProfile(
-            VideoOptions options,
+        private (DirectPlayProfile? Profile, PlayMethod? PlayMethod, int? AudioStreamIndex, TranscodeReason TranscodeReasons) GetVideoDirectPlayProfile(
+            MediaOptions options,
             MediaSourceInfo mediaSource,
-            MediaStream videoStream,
-            MediaStream audioStream,
+            MediaStream? videoStream,
+            MediaStream? audioStream,
+            ICollection<MediaStream> candidateAudioStreams,
+            MediaStream? subtitleStream,
             bool isEligibleForDirectPlay,
             bool isEligibleForDirectStream)
         {
             if (options.ForceDirectPlay)
             {
-                return (PlayMethod.DirectPlay, new List<TranscodeReason>());
+                return (null, PlayMethod.DirectPlay, audioStream?.Index, 0);
             }
+
             if (options.ForceDirectStream)
             {
-                return (PlayMethod.DirectStream, new List<TranscodeReason>());
+                return (null, PlayMethod.DirectStream, audioStream?.Index, 0);
             }
 
             DeviceProfile profile = options.Profile;
-
-            // See if it can be direct played
-            DirectPlayProfile directPlay = null;
-            foreach (var i in profile.DirectPlayProfiles)
-            {
-                if (i.Type == DlnaProfileType.Video && IsVideoDirectPlaySupported(i, mediaSource, videoStream, audioStream))
-                {
-                    directPlay = i;
-                    break;
-                }
-            }
-
-            if (directPlay == null)
-            {
-                _logger.LogInformation("Profile: {0}, No direct play profiles found for Path: {1}",
-                    profile.Name ?? "Unknown Profile",
-                    mediaSource.Path ?? "Unknown path");
-
-                return (null, GetTranscodeReasonsFromDirectPlayProfile(mediaSource, videoStream, audioStream, profile.DirectPlayProfiles));
-            }
-
             string container = mediaSource.Container;
 
-            var conditions = new List<ProfileCondition>();
-            foreach (var i in profile.ContainerProfiles)
-            {
-                if (i.Type == DlnaProfileType.Video
-                    && i.ContainsContainer(container))
-                {
-                    foreach (var c in i.Conditions)
-                    {
-                        conditions.Add(c);
-                    }
-                }
-            }
-
+            // Video
             int? width = videoStream?.Width;
             int? height = videoStream?.Height;
             int? bitDepth = videoStream?.BitDepth;
             int? videoBitrate = videoStream?.BitRate;
             double? videoLevel = videoStream?.Level;
-            string videoProfile = videoStream?.Profile;
-            float videoFramerate = videoStream == null ? 0 : videoStream.AverageFrameRate ?? videoStream.AverageFrameRate ?? 0;
+            string? videoProfile = videoStream?.Profile;
+            VideoRangeType? videoRangeType = videoStream?.VideoRangeType;
+            float videoFramerate = videoStream is null ? 0 : videoStream.ReferenceFrameRate ?? 0;
             bool? isAnamorphic = videoStream?.IsAnamorphic;
             bool? isInterlaced = videoStream?.IsInterlaced;
-            string videoCodecTag = videoStream?.CodecTag;
+            string? videoCodecTag = videoStream?.CodecTag;
             bool? isAvc = videoStream?.IsAVC;
 
-            int? audioBitrate = audioStream?.BitRate;
-            int? audioChannels = audioStream?.Channels;
-            string audioProfile = audioStream?.Profile;
-            int? audioSampleRate = audioStream?.SampleRate;
-            int? audioBitDepth = audioStream?.BitDepth;
-
-            TransportStreamTimestamp? timestamp = videoStream == null ? TransportStreamTimestamp.None : mediaSource.Timestamp;
+            TransportStreamTimestamp? timestamp = videoStream is null ? TransportStreamTimestamp.None : mediaSource.Timestamp;
             int? packetLength = videoStream?.PacketLength;
             int? refFrames = videoStream?.RefFrames;
 
             int? numAudioStreams = mediaSource.GetStreamCount(MediaStreamType.Audio);
             int? numVideoStreams = mediaSource.GetStreamCount(MediaStreamType.Video);
 
+            var checkVideoConditions = (ProfileCondition[] conditions) =>
+                conditions.Where(applyCondition => !ConditionProcessor.IsVideoConditionSatisfied(applyCondition, width, height, bitDepth, videoBitrate, videoProfile, videoRangeType, videoLevel, videoFramerate, packetLength, timestamp, isAnamorphic, isInterlaced, refFrames, numVideoStreams, numAudioStreams, videoCodecTag, isAvc));
+
             // Check container conditions
-            foreach (ProfileCondition i in conditions)
+            var containerProfileReasons = AggregateFailureConditions(
+                mediaSource,
+                profile,
+                "VideoCodecProfile",
+                profile.ContainerProfiles
+                    .Where(containerProfile => containerProfile.Type == DlnaProfileType.Video && containerProfile.ContainsContainer(container))
+                    .SelectMany(containerProfile => checkVideoConditions(containerProfile.Conditions)));
+
+            // Check video conditions
+            var videoCodecProfileReasons = AggregateFailureConditions(
+                mediaSource,
+                profile,
+                "VideoCodecProfile",
+                profile.CodecProfiles
+                    .Where(codecProfile => codecProfile.Type == CodecType.Video &&
+                        codecProfile.ContainsAnyCodec(videoStream?.Codec, container) &&
+                        !checkVideoConditions(codecProfile.ApplyConditions).Any())
+                    .SelectMany(codecProfile => checkVideoConditions(codecProfile.Conditions)));
+
+            // Check audio candidates profile conditions
+            var audioStreamMatches = candidateAudioStreams.ToDictionary(s => s, audioStream => CheckVideoAudioStreamDirectPlay(options, mediaSource, container, audioStream));
+
+            TranscodeReason subtitleProfileReasons = 0;
+            if (subtitleStream is not null)
             {
-                if (!ConditionProcessor.IsVideoConditionSatisfied(i, width, height, bitDepth, videoBitrate, videoProfile, videoLevel, videoFramerate, packetLength, timestamp, isAnamorphic, isInterlaced, refFrames, numVideoStreams, numAudioStreams, videoCodecTag, isAvc))
+                var subtitleProfile = GetSubtitleProfile(mediaSource, subtitleStream, options.Profile.SubtitleProfiles, PlayMethod.DirectPlay, _transcoderSupport, container, null);
+
+                if (subtitleProfile.Method != SubtitleDeliveryMethod.Drop
+                    && subtitleProfile.Method != SubtitleDeliveryMethod.External
+                    && subtitleProfile.Method != SubtitleDeliveryMethod.Embed)
                 {
-                    LogConditionFailure(profile, "VideoContainerProfile", i, mediaSource);
-
-                    var transcodeReason = GetTranscodeReasonForFailedCondition(i);
-                    var transcodeReasons = transcodeReason.HasValue
-                        ? new List<TranscodeReason> { transcodeReason.Value }
-                        : new List<TranscodeReason>();
-
-                    return (null, transcodeReasons);
+                    _logger.LogDebug("Not eligible for {0} due to unsupported subtitles", PlayMethod.DirectPlay);
+                    subtitleProfileReasons |= TranscodeReason.SubtitleCodecNotSupported;
                 }
             }
 
-            string videoCodec = videoStream?.Codec;
+            var containerSupported = false;
+            TranscodeReason[] rankings = [TranscodeReason.VideoCodecNotSupported, VideoCodecReasons, TranscodeReason.AudioCodecNotSupported, AudioCodecReasons, ContainerReasons];
 
-            conditions = new List<ProfileCondition>();
-            foreach (var i in profile.CodecProfiles)
-            {
-                if (i.Type == CodecType.Video && i.ContainsAnyCodec(videoCodec, container))
+            // Check DirectPlay profiles to see if it can be direct played
+            var analyzedProfiles = profile.DirectPlayProfiles
+                .Where(directPlayProfile => directPlayProfile.Type == DlnaProfileType.Video)
+                .Select((directPlayProfile, order) =>
                 {
-                    bool applyConditions = true;
-                    foreach (ProfileCondition applyCondition in i.ApplyConditions)
+                    TranscodeReason directPlayProfileReasons = 0;
+                    TranscodeReason audioCodecProfileReasons = 0;
+
+                    // Check container type
+                    if (!directPlayProfile.SupportsContainer(container))
                     {
-                        if (!ConditionProcessor.IsVideoConditionSatisfied(applyCondition, width, height, bitDepth, videoBitrate, videoProfile, videoLevel, videoFramerate, packetLength, timestamp, isAnamorphic, isInterlaced, refFrames, numVideoStreams, numAudioStreams, videoCodecTag, isAvc))
+                        directPlayProfileReasons |= TranscodeReason.ContainerNotSupported;
+                    }
+                    else
+                    {
+                        containerSupported = true;
+                    }
+
+                    // Check video codec
+                    string? videoCodec = videoStream?.Codec;
+                    if (!directPlayProfile.SupportsVideoCodec(videoCodec))
+                    {
+                        directPlayProfileReasons |= TranscodeReason.VideoCodecNotSupported;
+                    }
+
+                    // Check audio codec
+                    MediaStream? selectedAudioStream = null;
+                    if (candidateAudioStreams.Count != 0)
+                    {
+                        selectedAudioStream = candidateAudioStreams.FirstOrDefault(audioStream => directPlayProfile.SupportsAudioCodec(audioStream.Codec));
+                        if (selectedAudioStream is null)
                         {
-                            //LogConditionFailure(profile, "VideoCodecProfile.ApplyConditions", applyCondition, mediaSource);
-                            applyConditions = false;
-                            break;
+                            directPlayProfileReasons |= TranscodeReason.AudioCodecNotSupported;
+                        }
+                        else
+                        {
+                            audioCodecProfileReasons = audioStreamMatches.GetValueOrDefault(selectedAudioStream);
                         }
                     }
 
-                    if (applyConditions)
+                    var failureReasons = directPlayProfileReasons | containerProfileReasons | subtitleProfileReasons;
+
+                    if ((failureReasons & TranscodeReason.VideoCodecNotSupported) == 0)
                     {
-                        foreach (ProfileCondition c in i.Conditions)
-                        {
-                            conditions.Add(c);
-                        }
+                        failureReasons |= videoCodecProfileReasons;
                     }
-                }
-            }
 
-            foreach (ProfileCondition i in conditions)
-            {
-                if (!ConditionProcessor.IsVideoConditionSatisfied(i, width, height, bitDepth, videoBitrate, videoProfile, videoLevel, videoFramerate, packetLength, timestamp, isAnamorphic, isInterlaced, refFrames, numVideoStreams, numAudioStreams, videoCodecTag, isAvc))
-                {
-                    LogConditionFailure(profile, "VideoCodecProfile", i, mediaSource);
-
-                    var transcodeReason = GetTranscodeReasonForFailedCondition(i);
-                    var transcodeReasons = transcodeReason.HasValue
-                        ? new List<TranscodeReason> { transcodeReason.Value }
-                        : new List<TranscodeReason>();
-
-                    return (null, transcodeReasons);
-                }
-            }
-
-            if (audioStream != null)
-            {
-                string audioCodec = audioStream.Codec;
-                conditions = new List<ProfileCondition>();
-                bool? isSecondaryAudio = audioStream == null ? null : mediaSource.IsSecondaryAudio(audioStream);
-
-                foreach (var i in profile.CodecProfiles)
-                {
-                    if (i.Type == CodecType.VideoAudio && i.ContainsAnyCodec(audioCodec, container))
+                    if ((failureReasons & TranscodeReason.AudioCodecNotSupported) == 0)
                     {
-                        bool applyConditions = true;
-                        foreach (ProfileCondition applyCondition in i.ApplyConditions)
-                        {
-                            if (!ConditionProcessor.IsVideoAudioConditionSatisfied(applyCondition, audioChannels, audioBitrate, audioSampleRate, audioBitDepth, audioProfile, isSecondaryAudio))
-                            {
-                                //LogConditionFailure(profile, "VideoAudioCodecProfile.ApplyConditions", applyCondition, mediaSource);
-                                applyConditions = false;
-                                break;
-                            }
-                        }
-
-                        if (applyConditions)
-                        {
-                            foreach (ProfileCondition c in i.Conditions)
-                            {
-                                conditions.Add(c);
-                            }
-                        }
+                        failureReasons |= audioCodecProfileReasons;
                     }
-                }
 
-                foreach (ProfileCondition i in conditions)
-                {
-                    if (!ConditionProcessor.IsVideoAudioConditionSatisfied(i, audioChannels, audioBitrate, audioSampleRate, audioBitDepth, audioProfile, isSecondaryAudio))
+                    var directStreamFailureReasons = failureReasons & (~DirectStreamReasons);
+
+                    PlayMethod? playMethod = null;
+                    if (failureReasons == 0 && isEligibleForDirectPlay && mediaSource.SupportsDirectPlay)
                     {
-                        LogConditionFailure(profile, "VideoAudioCodecProfile", i, mediaSource);
-
-                        var transcodeReason = GetTranscodeReasonForFailedCondition(i);
-                        var transcodeReasons = transcodeReason.HasValue
-                            ? new List<TranscodeReason> { transcodeReason.Value }
-                            : new List<TranscodeReason>();
-
-                        return (null, transcodeReasons);
+                        playMethod = PlayMethod.DirectPlay;
                     }
-                }
-            }
+                    else if (directStreamFailureReasons == 0 && isEligibleForDirectStream && mediaSource.SupportsDirectStream)
+                    {
+                        playMethod = PlayMethod.DirectStream;
+                    }
 
-            if (isEligibleForDirectStream && mediaSource.SupportsDirectStream)
+                    var ranked = GetRank(ref failureReasons, rankings);
+
+                    return (Result: (Profile: directPlayProfile, PlayMethod: playMethod, AudioStreamIndex: selectedAudioStream?.Index, TranscodeReason: failureReasons), Order: order, Rank: ranked);
+                })
+                .OrderByDescending(analysis => analysis.Result.PlayMethod)
+                .ThenByDescending(analysis => analysis.Rank)
+                .ThenBy(analysis => analysis.Order)
+                .ToArray()
+                .ToLookup(analysis => analysis.Result.PlayMethod is not null);
+
+            var profileMatch = analyzedProfiles[true]
+                .Select(analysis => analysis.Result)
+                .FirstOrDefault();
+            if (profileMatch.Profile is not null)
             {
-                return (PlayMethod.DirectStream, new List<TranscodeReason>());
+                return profileMatch;
             }
 
-            return (null, new List<TranscodeReason> { TranscodeReason.ContainerBitrateExceedsLimit });
+            var failureReasons = analyzedProfiles[false]
+                .Select(analysis => analysis.Result)
+                .Where(result => !containerSupported || !result.TranscodeReason.HasFlag(TranscodeReason.ContainerNotSupported))
+                .FirstOrDefault().TranscodeReason;
+            if (failureReasons == 0)
+            {
+                failureReasons = TranscodeReason.DirectPlayError;
+            }
+
+            return (Profile: null, PlayMethod: null, AudioStreamIndex: null, TranscodeReasons: failureReasons);
+        }
+
+        private TranscodeReason CheckVideoAudioStreamDirectPlay(MediaOptions options, MediaSourceInfo mediaSource, string container, MediaStream audioStream)
+        {
+            var profile = options.Profile;
+            var audioFailureConditions = GetProfileConditionsForVideoAudio(profile.CodecProfiles, container, audioStream.Codec, audioStream.Channels, audioStream.BitRate, audioStream.SampleRate, audioStream.BitDepth, audioStream.Profile, mediaSource.IsSecondaryAudio(audioStream));
+
+            var audioStreamFailureReasons = AggregateFailureConditions(mediaSource, profile, "VideoAudioCodecProfile", audioFailureConditions);
+            if (audioStream.IsExternal == true)
+            {
+                audioStreamFailureReasons |= TranscodeReason.AudioIsExternal;
+            }
+
+            return audioStreamFailureReasons;
+        }
+
+        private TranscodeReason AggregateFailureConditions(MediaSourceInfo mediaSource, DeviceProfile profile, string type, IEnumerable<ProfileCondition> conditions)
+        {
+            return conditions.Aggregate<ProfileCondition, TranscodeReason>(0, (reasons, i) =>
+            {
+                LogConditionFailure(profile, type, i, mediaSource);
+                var transcodeReasons = GetTranscodeReasonForFailedCondition(i);
+                return reasons | transcodeReasons;
+            });
         }
 
         private void LogConditionFailure(DeviceProfile profile, string type, ProfileCondition condition, MediaSourceInfo mediaSource)
         {
-            _logger.LogInformation("Profile: {0}, DirectPlay=false. Reason={1}.{2} Condition: {3}. ConditionValue: {4}. IsRequired: {5}. Path: {6}",
+            _logger.LogDebug(
+                "Profile: {0}, DirectPlay=false. Reason={1}.{2} Condition: {3}. ConditionValue: {4}. IsRequired: {5}. Path: {6}",
                 type,
                 profile.Name ?? "Unknown Profile",
                 condition.Property,
@@ -1141,39 +1446,27 @@ namespace MediaBrowser.Model.Dlna
                 mediaSource.Path ?? "Unknown path");
         }
 
-        private (bool directPlay, TranscodeReason? reason) IsEligibleForDirectPlay(
-            MediaSourceInfo item,
-            long maxBitrate,
-            MediaStream subtitleStream,
-            VideoOptions options,
-            PlayMethod playMethod)
-        {
-            if (subtitleStream != null)
-            {
-                var subtitleProfile = GetSubtitleProfile(item, subtitleStream, options.Profile.SubtitleProfiles, playMethod, _transcoderSupport, item.Container, null);
-
-                if (subtitleProfile.Method != SubtitleDeliveryMethod.External && subtitleProfile.Method != SubtitleDeliveryMethod.Embed)
-                {
-                    _logger.LogInformation("Not eligible for {0} due to unsupported subtitles", playMethod);
-                    return (false, TranscodeReason.SubtitleCodecNotSupported);
-                }
-            }
-
-            bool result = IsAudioEligibleForDirectPlay(item, maxBitrate, playMethod);
-
-            return (result, result ? (TranscodeReason?)null : TranscodeReason.ContainerBitrateExceedsLimit);
-        }
-
+        /// <summary>
+        /// Normalizes input container.
+        /// </summary>
+        /// <param name="mediaSource">The <see cref="MediaSourceInfo"/>.</param>
+        /// <param name="subtitleStream">The <see cref="MediaStream"/> of the subtitle stream.</param>
+        /// <param name="subtitleProfiles">The list of supported <see cref="SubtitleProfile"/>s.</param>
+        /// <param name="playMethod">The <see cref="PlayMethod"/>.</param>
+        /// <param name="transcoderSupport">The <see cref="ITranscoderSupport"/>.</param>
+        /// <param name="outputContainer">The output container.</param>
+        /// <param name="transcodingSubProtocol">The subtitle transcoding protocol.</param>
+        /// <returns>The normalized input container.</returns>
         public static SubtitleProfile GetSubtitleProfile(
             MediaSourceInfo mediaSource,
             MediaStream subtitleStream,
             SubtitleProfile[] subtitleProfiles,
             PlayMethod playMethod,
             ITranscoderSupport transcoderSupport,
-            string outputContainer,
-            string transcodingSubProtocol)
+            string? outputContainer,
+            MediaStreamProtocol? transcodingSubProtocol)
         {
-            if (!subtitleStream.IsExternal && (playMethod != PlayMethod.Transcode || !string.Equals(transcodingSubProtocol, "hls", StringComparison.OrdinalIgnoreCase)))
+            if (!subtitleStream.IsExternal && (playMethod != PlayMethod.Transcode || transcodingSubProtocol != MediaStreamProtocol.hls))
             {
                 // Look for supported embedded subs of the same format
                 foreach (var profile in subtitleProfiles)
@@ -1188,17 +1481,17 @@ namespace MediaBrowser.Model.Dlna
                         continue;
                     }
 
-                    if (!ContainerProfile.ContainsContainer(profile.Container, outputContainer))
+                    if (!ContainerHelper.ContainsContainer(profile.Container, outputContainer))
                     {
                         continue;
                     }
 
-                    if (playMethod == PlayMethod.Transcode && !IsSubtitleEmbedSupported(subtitleStream, profile, transcodingSubProtocol, outputContainer))
+                    if (playMethod == PlayMethod.Transcode && !IsSubtitleEmbedSupported(outputContainer))
                     {
                         continue;
                     }
 
-                    if (subtitleStream.IsTextSubtitleStream == MediaStream.IsTextFormat(profile.Format) && StringHelper.EqualsIgnoreCase(profile.Format, subtitleStream.Codec))
+                    if (subtitleStream.IsTextSubtitleStream == MediaStream.IsTextFormat(profile.Format) && string.Equals(profile.Format, subtitleStream.Codec, StringComparison.OrdinalIgnoreCase))
                     {
                         return profile;
                     }
@@ -1217,12 +1510,12 @@ namespace MediaBrowser.Model.Dlna
                         continue;
                     }
 
-                    if (!ContainerProfile.ContainsContainer(profile.Container, outputContainer))
+                    if (!ContainerHelper.ContainsContainer(profile.Container, outputContainer))
                     {
                         continue;
                     }
 
-                    if (playMethod == PlayMethod.Transcode && !IsSubtitleEmbedSupported(subtitleStream, profile, transcodingSubProtocol, outputContainer))
+                    if (playMethod == PlayMethod.Transcode && !IsSubtitleEmbedSupported(outputContainer))
                     {
                         continue;
                     }
@@ -1244,28 +1537,25 @@ namespace MediaBrowser.Model.Dlna
                 };
         }
 
-        private static bool IsSubtitleEmbedSupported(MediaStream subtitleStream, SubtitleProfile subtitleProfile, string transcodingSubProtocol, string transcodingContainer)
+        private static bool IsSubtitleEmbedSupported(string? transcodingContainer)
         {
             if (!string.IsNullOrEmpty(transcodingContainer))
             {
-                string[] normalizedContainers = ContainerProfile.SplitValue(transcodingContainer);
-
-                if (ContainerProfile.ContainsContainer(normalizedContainers, "ts")
-                    || ContainerProfile.ContainsContainer(normalizedContainers, "mpegts")
-                    || ContainerProfile.ContainsContainer(normalizedContainers, "mp4"))
+                if (ContainerHelper.ContainsContainer(transcodingContainer, "ts,mpegts,mp4"))
                 {
                     return false;
                 }
-                else if (ContainerProfile.ContainsContainer(normalizedContainers, "mkv")
-                    || ContainerProfile.ContainsContainer(normalizedContainers, "matroska"))
+
+                if (ContainerHelper.ContainsContainer(transcodingContainer, "mkv,matroska"))
                 {
                     return true;
                 }
             }
+
             return false;
         }
 
-        private static SubtitleProfile GetExternalSubtitleProfile(MediaSourceInfo mediaSource, MediaStream subtitleStream, SubtitleProfile[] subtitleProfiles, PlayMethod playMethod, ITranscoderSupport transcoderSupport, bool allowConversion)
+        private static SubtitleProfile? GetExternalSubtitleProfile(MediaSourceInfo mediaSource, MediaStream subtitleStream, SubtitleProfile[] subtitleProfiles, PlayMethod playMethod, ITranscoderSupport transcoderSupport, bool allowConversion)
         {
             foreach (var profile in subtitleProfiles)
             {
@@ -1292,7 +1582,7 @@ namespace MediaBrowser.Model.Dlna
                 if ((profile.Method == SubtitleDeliveryMethod.External && subtitleStream.IsTextSubtitleStream == MediaStream.IsTextFormat(profile.Format)) ||
                     (profile.Method == SubtitleDeliveryMethod.Hls && subtitleStream.IsTextSubtitleStream))
                 {
-                    bool requiresConversion = !StringHelper.EqualsIgnoreCase(subtitleStream.Codec, profile.Format);
+                    bool requiresConversion = !string.Equals(subtitleStream.Codec, profile.Format, StringComparison.OrdinalIgnoreCase);
 
                     if (!requiresConversion)
                     {
@@ -1320,65 +1610,107 @@ namespace MediaBrowser.Model.Dlna
             return null;
         }
 
-        private bool IsAudioEligibleForDirectPlay(MediaSourceInfo item, long maxBitrate, PlayMethod playMethod)
+        private bool IsBitrateLimitExceeded(MediaSourceInfo item, long maxBitrate)
         {
-            // Don't restrict by bitrate if coming from an external domain
+            // Don't restrict bitrate if item is remote.
             if (item.IsRemote)
             {
-                return true;
+                return false;
             }
 
-            long requestedMaxBitrate = maxBitrate > 0 ? maxBitrate : 1000000;
+            // If no maximum bitrate is set, default to no maximum bitrate.
+            long requestedMaxBitrate = maxBitrate > 0 ? maxBitrate : int.MaxValue;
 
-            // If we don't know the bitrate, then force a transcode if requested max bitrate is under 40 mbps
+            // If we don't know the item bitrate, then force a transcode if requested max bitrate is under 40 mbps
             int itemBitrate = item.Bitrate ?? 40000000;
 
             if (itemBitrate > requestedMaxBitrate)
             {
-                _logger.LogInformation("Bitrate exceeds {PlayBackMethod} limit: media bitrate: {MediaBitrate}, max bitrate: {MaxBitrate}",
-                    playMethod, itemBitrate, requestedMaxBitrate);
-                return false;
+                _logger.LogDebug(
+                    "Bitrate exceeds limit: media bitrate: {MediaBitrate}, max bitrate: {MaxBitrate}",
+                    itemBitrate,
+                    requestedMaxBitrate);
+                return true;
             }
 
-            return true;
+            return false;
         }
 
-        private static void ValidateInput(VideoOptions options)
+        private static void ValidateMediaOptions(MediaOptions options, bool isMediaSource)
         {
-            ValidateAudioInput(options);
-
-            if (options.AudioStreamIndex.HasValue && string.IsNullOrEmpty(options.MediaSourceId))
+            if (options.ItemId.IsEmpty())
             {
-                throw new ArgumentException("MediaSourceId is required when a specific audio stream is requested");
+                ArgumentException.ThrowIfNullOrEmpty(options.DeviceId);
             }
 
-            if (options.SubtitleStreamIndex.HasValue && string.IsNullOrEmpty(options.MediaSourceId))
-            {
-                throw new ArgumentException("MediaSourceId is required when a specific subtitle stream is requested");
-            }
-        }
-
-        private static void ValidateAudioInput(AudioOptions options)
-        {
-            if (options.ItemId.Equals(Guid.Empty))
-            {
-                throw new ArgumentException("ItemId is required");
-            }
-            if (string.IsNullOrEmpty(options.DeviceId))
-            {
-                throw new ArgumentException("DeviceId is required");
-            }
-            if (options.Profile == null)
+            if (options.Profile is null)
             {
                 throw new ArgumentException("Profile is required");
             }
-            if (options.MediaSources == null)
+
+            if (options.MediaSources is null)
             {
                 throw new ArgumentException("MediaSources is required");
             }
+
+            if (isMediaSource)
+            {
+                if (options.AudioStreamIndex.HasValue && string.IsNullOrEmpty(options.MediaSourceId))
+                {
+                    throw new ArgumentException("MediaSourceId is required when a specific audio stream is requested");
+                }
+
+                if (options.SubtitleStreamIndex.HasValue && string.IsNullOrEmpty(options.MediaSourceId))
+                {
+                    throw new ArgumentException("MediaSourceId is required when a specific subtitle stream is requested");
+                }
+            }
         }
 
-        private void ApplyTranscodingConditions(StreamInfo item, IEnumerable<ProfileCondition> conditions, string qualifier, bool enableQualifiedConditions, bool enableNonQualifiedConditions)
+        private static IEnumerable<ProfileCondition> GetProfileConditionsForVideoAudio(
+            IEnumerable<CodecProfile> codecProfiles,
+            string container,
+            string codec,
+            int? audioChannels,
+            int? audioBitrate,
+            int? audioSampleRate,
+            int? audioBitDepth,
+            string audioProfile,
+            bool? isSecondaryAudio)
+        {
+            return codecProfiles
+                .Where(profile => profile.Type == CodecType.VideoAudio &&
+                    profile.ContainsAnyCodec(codec, container) &&
+                    profile.ApplyConditions.All(applyCondition => ConditionProcessor.IsVideoAudioConditionSatisfied(applyCondition, audioChannels, audioBitrate, audioSampleRate, audioBitDepth, audioProfile, isSecondaryAudio)))
+                .SelectMany(profile => profile.Conditions)
+                .Where(condition => !ConditionProcessor.IsVideoAudioConditionSatisfied(condition, audioChannels, audioBitrate, audioSampleRate, audioBitDepth, audioProfile, isSecondaryAudio));
+        }
+
+        private static IEnumerable<ProfileCondition> GetProfileConditionsForAudio(
+            IEnumerable<CodecProfile> codecProfiles,
+            string container,
+            string? codec,
+            int? audioChannels,
+            int? audioBitrate,
+            int? audioSampleRate,
+            int? audioBitDepth,
+            bool checkConditions)
+        {
+            var conditions = codecProfiles
+                .Where(profile => profile.Type == CodecType.Audio &&
+                    profile.ContainsAnyCodec(codec, container) &&
+                    profile.ApplyConditions.All(applyCondition => ConditionProcessor.IsAudioConditionSatisfied(applyCondition, audioChannels, audioBitrate, audioSampleRate, audioBitDepth)))
+                .SelectMany(profile => profile.Conditions);
+
+            if (!checkConditions)
+            {
+                return conditions;
+            }
+
+            return conditions.Where(condition => !ConditionProcessor.IsAudioConditionSatisfied(condition, audioChannels, audioBitrate, audioSampleRate, audioBitDepth));
+        }
+
+        private void ApplyTranscodingConditions(StreamInfo item, IEnumerable<ProfileCondition> conditions, string? qualifier, bool enableQualifiedConditions, bool enableNonQualifiedConditions)
         {
             foreach (ProfileCondition condition in conditions)
             {
@@ -1404,7 +1736,7 @@ namespace MediaBrowser.Model.Dlna
                                 continue;
                             }
 
-                            if (int.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1419,8 +1751,36 @@ namespace MediaBrowser.Model.Dlna
                                     item.AudioBitrate = Math.Max(num, item.AudioBitrate ?? num);
                                 }
                             }
+
                             break;
                         }
+
+                    case ProfileConditionValue.AudioSampleRate:
+                        {
+                            if (!enableNonQualifiedConditions)
+                            {
+                                continue;
+                            }
+
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
+                            {
+                                if (condition.Condition == ProfileConditionType.Equals)
+                                {
+                                    item.AudioSampleRate = num;
+                                }
+                                else if (condition.Condition == ProfileConditionType.LessThanEqual)
+                                {
+                                    item.AudioSampleRate = Math.Min(num, item.AudioSampleRate ?? num);
+                                }
+                                else if (condition.Condition == ProfileConditionType.GreaterThanEqual)
+                                {
+                                    item.AudioSampleRate = Math.Max(num, item.AudioSampleRate ?? num);
+                                }
+                            }
+
+                            break;
+                        }
+
                     case ProfileConditionValue.AudioChannels:
                         {
                             if (string.IsNullOrEmpty(qualifier))
@@ -1438,7 +1798,7 @@ namespace MediaBrowser.Model.Dlna
                                 }
                             }
 
-                            if (int.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1453,8 +1813,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.SetOption(qualifier, "audiochannels", Math.Max(num, item.GetTargetAudioChannels(qualifier) ?? num).ToString(CultureInfo.InvariantCulture));
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.IsAvc:
                         {
                             if (!enableNonQualifiedConditions)
@@ -1473,8 +1835,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.RequireAvc = true;
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.IsAnamorphic:
                         {
                             if (!enableNonQualifiedConditions)
@@ -1493,8 +1857,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.RequireNonAnamorphic = true;
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.IsInterlaced:
                         {
                             if (string.IsNullOrEmpty(qualifier))
@@ -1523,8 +1889,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.SetOption(qualifier, "deinterlace", "true");
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.AudioProfile:
                     case ProfileConditionValue.Has64BitOffsets:
                     case ProfileConditionValue.PacketLength:
@@ -1536,6 +1904,7 @@ namespace MediaBrowser.Model.Dlna
                             // Not supported yet
                             break;
                         }
+
                     case ProfileConditionValue.RefFrames:
                         {
                             if (string.IsNullOrEmpty(qualifier))
@@ -1553,7 +1922,7 @@ namespace MediaBrowser.Model.Dlna
                                 }
                             }
 
-                            if (int.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1568,8 +1937,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.SetOption(qualifier, "maxrefframes", Math.Max(num, item.GetTargetRefFrames(qualifier) ?? num).ToString(CultureInfo.InvariantCulture));
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.VideoBitDepth:
                         {
                             if (string.IsNullOrEmpty(qualifier))
@@ -1587,7 +1958,7 @@ namespace MediaBrowser.Model.Dlna
                                 }
                             }
 
-                            if (int.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1602,8 +1973,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.SetOption(qualifier, "videobitdepth", Math.Max(num, item.GetTargetVideoBitDepth(qualifier) ?? num).ToString(CultureInfo.InvariantCulture));
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.VideoProfile:
                         {
                             if (string.IsNullOrEmpty(qualifier))
@@ -1611,21 +1984,99 @@ namespace MediaBrowser.Model.Dlna
                                 continue;
                             }
 
-                            if (!string.IsNullOrEmpty(value))
+                            // Change from split by | to comma
+                            // Strip spaces to avoid having to encode
+                            var values = value
+                                .Split('|', StringSplitOptions.RemoveEmptyEntries);
+
+                            if (condition.Condition == ProfileConditionType.Equals)
                             {
-                                // change from split by | to comma
-
-                                // strip spaces to avoid having to encode
-                                var values = value
-                                    .Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
-
-                                if (condition.Condition == ProfileConditionType.Equals || condition.Condition == ProfileConditionType.EqualsAny)
+                                item.SetOption(qualifier, "profile", string.Join(',', values));
+                            }
+                            else if (condition.Condition == ProfileConditionType.EqualsAny)
+                            {
+                                var currentValue = item.GetOption(qualifier, "profile");
+                                if (!string.IsNullOrEmpty(currentValue) && values.Any(value => value == currentValue))
                                 {
-                                    item.SetOption(qualifier, "profile", string.Join(",", values));
+                                    item.SetOption(qualifier, "profile", currentValue);
+                                }
+                                else
+                                {
+                                    item.SetOption(qualifier, "profile", string.Join(',', values));
                                 }
                             }
+
                             break;
                         }
+
+                    case ProfileConditionValue.VideoRangeType:
+                        {
+                            if (string.IsNullOrEmpty(qualifier))
+                            {
+                                continue;
+                            }
+
+                            // change from split by | to comma
+                            // strip spaces to avoid having to encode
+                            var values = value
+                                .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+                            if (condition.Condition == ProfileConditionType.Equals)
+                            {
+                                item.SetOption(qualifier, "rangetype", string.Join(',', values));
+                            }
+                            else if (condition.Condition == ProfileConditionType.NotEquals)
+                            {
+                                item.SetOption(qualifier, "rangetype", string.Join(',', Enum.GetNames(typeof(VideoRangeType)).Except(values)));
+                            }
+                            else if (condition.Condition == ProfileConditionType.EqualsAny)
+                            {
+                                var currentValue = item.GetOption(qualifier, "rangetype");
+                                if (!string.IsNullOrEmpty(currentValue) && values.Any(v => string.Equals(v, currentValue, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    item.SetOption(qualifier, "rangetype", currentValue);
+                                }
+                                else
+                                {
+                                    item.SetOption(qualifier, "rangetype", string.Join(',', values));
+                                }
+                            }
+
+                            break;
+                        }
+
+                    case ProfileConditionValue.VideoCodecTag:
+                        {
+                            if (string.IsNullOrEmpty(qualifier))
+                            {
+                                continue;
+                            }
+
+                            // change from split by | to comma
+                            // strip spaces to avoid having to encode
+                            var values = value
+                                .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+                            if (condition.Condition == ProfileConditionType.Equals)
+                            {
+                                item.SetOption(qualifier, "codectag", string.Join(',', values));
+                            }
+                            else if (condition.Condition == ProfileConditionType.EqualsAny)
+                            {
+                                var currentValue = item.GetOption(qualifier, "codectag");
+                                if (!string.IsNullOrEmpty(currentValue) && values.Any(v => string.Equals(v, currentValue, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    item.SetOption(qualifier, "codectag", currentValue);
+                                }
+                                else
+                                {
+                                    item.SetOption(qualifier, "codectag", string.Join(',', values));
+                                }
+                            }
+
+                            break;
+                        }
+
                     case ProfileConditionValue.Height:
                         {
                             if (!enableNonQualifiedConditions)
@@ -1633,7 +2084,7 @@ namespace MediaBrowser.Model.Dlna
                                 continue;
                             }
 
-                            if (int.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1648,8 +2099,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.MaxHeight = Math.Max(num, item.MaxHeight ?? num);
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.VideoBitrate:
                         {
                             if (!enableNonQualifiedConditions)
@@ -1657,7 +2110,7 @@ namespace MediaBrowser.Model.Dlna
                                 continue;
                             }
 
-                            if (int.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1672,8 +2125,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.VideoBitrate = Math.Max(num, item.VideoBitrate ?? num);
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.VideoFramerate:
                         {
                             if (!enableNonQualifiedConditions)
@@ -1681,7 +2136,7 @@ namespace MediaBrowser.Model.Dlna
                                 continue;
                             }
 
-                            if (float.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (float.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1696,8 +2151,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.MaxFramerate = Math.Max(num, item.MaxFramerate ?? num);
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.VideoLevel:
                         {
                             if (string.IsNullOrEmpty(qualifier))
@@ -1705,7 +2162,7 @@ namespace MediaBrowser.Model.Dlna
                                 continue;
                             }
 
-                            if (int.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1720,8 +2177,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.SetOption(qualifier, "level", Math.Max(num, item.GetTargetVideoLevel(qualifier) ?? num).ToString(CultureInfo.InvariantCulture));
                                 }
                             }
+
                             break;
                         }
+
                     case ProfileConditionValue.Width:
                         {
                             if (!enableNonQualifiedConditions)
@@ -1729,7 +2188,7 @@ namespace MediaBrowser.Model.Dlna
                                 continue;
                             }
 
-                            if (int.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                            if (int.TryParse(value, CultureInfo.InvariantCulture, out var num))
                             {
                                 if (condition.Condition == ProfileConditionType.Equals)
                                 {
@@ -1744,8 +2203,10 @@ namespace MediaBrowser.Model.Dlna
                                     item.MaxWidth = Math.Max(num, item.MaxWidth ?? num);
                                 }
                             }
+
                             break;
                         }
+
                     default:
                         break;
                 }
@@ -1761,7 +2222,7 @@ namespace MediaBrowser.Model.Dlna
             }
 
             // Check audio codec
-            string audioCodec = audioStream?.Codec;
+            string? audioCodec = audioStream?.Codec;
             if (!profile.SupportsAudioCodec(audioCodec))
             {
                 return false;
@@ -1770,28 +2231,40 @@ namespace MediaBrowser.Model.Dlna
             return true;
         }
 
-        private bool IsVideoDirectPlaySupported(DirectPlayProfile profile, MediaSourceInfo item, MediaStream videoStream, MediaStream audioStream)
+        private static bool IsAudioDirectStreamSupported(DirectPlayProfile profile, MediaSourceInfo item, MediaStream audioStream)
         {
-            // Check container type
+            // Check container type, this should NOT be supported
+            // If the container is supported, the file should be directly played
             if (!profile.SupportsContainer(item.Container))
             {
-                return false;
+                // Check audio codec, we cannot use the SupportsAudioCodec here
+                // Because that one assumes empty container supports all codec, which is just useless
+                string? audioCodec = audioStream?.Codec;
+                if (string.Equals(profile.AudioCodec, audioCodec, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(profile.Container, audioCodec, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
             }
 
-            // Check video codec
-            string videoCodec = videoStream?.Codec;
-            if (!profile.SupportsVideoCodec(videoCodec))
+            return false;
+        }
+
+        private int GetRank(ref TranscodeReason a, TranscodeReason[] rankings)
+        {
+            var index = 1;
+            foreach (var flag in rankings)
             {
-                return false;
+                var reason = a & flag;
+                if (reason != 0)
+                {
+                    return index;
+                }
+
+                index++;
             }
 
-            // Check audio codec
-            if (audioStream != null && !profile.SupportsAudioCodec(audioStream.Codec))
-            {
-                return false;
-            }
-
-            return true;
+            return index;
         }
     }
 }

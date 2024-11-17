@@ -1,30 +1,19 @@
-using System;
-using System.Collections.Generic;
+#nullable disable
+
+#pragma warning disable CS1591
+
 using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
 using MediaBrowser.Common;
-using MediaBrowser.Model.System;
 using Microsoft.AspNetCore.Http;
 
 namespace MediaBrowser.Controller
 {
     /// <summary>
-    /// Interface IServerApplicationHost
+    /// Interface IServerApplicationHost.
     /// </summary>
     public interface IServerApplicationHost : IApplicationHost
     {
-        event EventHandler HasUpdateAvailableChanged;
-
-        /// <summary>
-        /// Gets the system info.
-        /// </summary>
-        /// <returns>SystemInfo.</returns>
-        Task<SystemInfo> GetSystemInfo(CancellationToken cancellationToken);
-
-        Task<PublicSystemInfo> GetPublicSystemInfo(CancellationToken cancellationToken);
-
-        bool CanLaunchWebBrowser { get; }
+        bool CoreStartupHasCompleted { get; }
 
         /// <summary>
         /// Gets the HTTP server port.
@@ -39,16 +28,9 @@ namespace MediaBrowser.Controller
         int HttpsPort { get; }
 
         /// <summary>
-        /// Gets a value indicating whether [supports HTTPS].
+        /// Gets a value indicating whether the server should listen on an HTTPS port.
         /// </summary>
-        /// <value><c>true</c> if [supports HTTPS]; otherwise, <c>false</c>.</value>
-        bool EnableHttps { get; }
-
-        /// <summary>
-        /// Gets a value indicating whether this instance has update available.
-        /// </summary>
-        /// <value><c>true</c> if this instance has update available; otherwise, <c>false</c>.</value>
-        bool HasUpdateAvailable { get; }
+        bool ListenWithHttps { get; }
 
         /// <summary>
         /// Gets the name of the friendly.
@@ -57,40 +39,52 @@ namespace MediaBrowser.Controller
         string FriendlyName { get; }
 
         /// <summary>
-        /// Gets the local ip address.
+        /// Gets a URL specific for the request.
         /// </summary>
-        /// <value>The local ip address.</value>
-        Task<List<IPAddress>> GetLocalIpAddresses(CancellationToken cancellationToken);
+        /// <param name="request">The <see cref="HttpRequest"/> instance.</param>
+        /// <returns>An accessible URL.</returns>
+        string GetSmartApiUrl(HttpRequest request);
 
         /// <summary>
-        /// Gets the local API URL.
+        /// Gets a URL specific for the request.
         /// </summary>
-        /// <value>The local API URL.</value>
-        Task<string> GetLocalApiUrl(CancellationToken cancellationToken);
+        /// <param name="remoteAddr">The remote <see cref="IPAddress"/> of the connection.</param>
+        /// <returns>An accessible URL.</returns>
+        string GetSmartApiUrl(IPAddress remoteAddr);
 
         /// <summary>
-        /// Gets the local API URL.
+        /// Gets a URL specific for the request.
         /// </summary>
-        /// <param name="host">The host.</param>
-        /// <returns>System.String.</returns>
-        string GetLocalApiUrl(string host);
+        /// <param name="hostname">The hostname used in the connection.</param>
+        /// <returns>An accessible URL.</returns>
+        string GetSmartApiUrl(string hostname);
 
         /// <summary>
-        /// Gets the local API URL.
+        /// Gets an URL that can be used to access the API over LAN.
         /// </summary>
-        string GetLocalApiUrl(IPAddress address);
+        /// <param name="ipAddress">An optional IP address to use.</param>
+        /// <param name="allowHttps">A value indicating whether to allow HTTPS.</param>
+        /// <returns>The API URL.</returns>
+        string GetApiUrlForLocalAccess(IPAddress ipAddress = null, bool allowHttps = true);
 
-        void LaunchUrl(string url);
-
-        void EnableLoopback(string appName);
-
-        IEnumerable<WakeOnLanInfo> GetWakeOnLanInfo();
+        /// <summary>
+        /// Gets a local (LAN) URL that can be used to access the API.
+        /// Note: if passing non-null scheme or port it is up to the caller to ensure they form the correct pair.
+        /// </summary>
+        /// <param name="hostname">The hostname to use in the URL.</param>
+        /// <param name="scheme">
+        /// The scheme to use for the URL. If null, the scheme will be selected automatically,
+        /// preferring HTTPS, if available.
+        /// </param>
+        /// <param name="port">
+        /// The port to use for the URL. If null, the port will be selected automatically,
+        /// preferring the HTTPS port, if available.
+        /// </param>
+        /// <returns>The API URL.</returns>
+        string GetLocalApiUrl(string hostname, string scheme = null, int? port = null);
 
         string ExpandVirtualPath(string path);
+
         string ReverseVirtualPath(string path);
-
-        Task ExecuteHttpHandlerAsync(HttpContext context, Func<Task> next);
-
-        Task ExecuteWebsocketHandlerAsync(HttpContext context, Func<Task> next);
     }
 }

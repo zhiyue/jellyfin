@@ -12,9 +12,9 @@ namespace Emby.Server.Implementations.Data
     public class CleanDatabaseScheduledTask : ILibraryPostScanTask
     {
         private readonly ILibraryManager _libraryManager;
-        private readonly ILogger _logger;
+        private readonly ILogger<CleanDatabaseScheduledTask> _logger;
 
-        public CleanDatabaseScheduledTask(ILibraryManager libraryManager, ILogger logger)
+        public CleanDatabaseScheduledTask(ILibraryManager libraryManager, ILogger<CleanDatabaseScheduledTask> logger)
         {
             _libraryManager = libraryManager;
             _logger = logger;
@@ -44,14 +44,13 @@ namespace Emby.Server.Implementations.Data
 
                 var item = _libraryManager.GetItemById(itemId);
 
-                if (item != null)
+                if (item is not null)
                 {
                     _logger.LogInformation("Cleaning item {0} type: {1} path: {2}", item.Name, item.GetType().Name, item.Path ?? string.Empty);
 
                     _libraryManager.DeleteItem(item, new DeleteOptions
                     {
                         DeleteFileLocation = false
-
                     });
                 }
 

@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
@@ -63,6 +64,11 @@ namespace Emby.Server.Implementations.Library.Validators
                 try
                 {
                     var item = _libraryManager.GetPerson(person);
+                    if (item is null)
+                    {
+                        _logger.LogWarning("Failed to get person: {Name}", person);
+                        continue;
+                    }
 
                     var options = new MetadataRefreshOptions(new DirectoryService(_fileSystem))
                     {
@@ -78,7 +84,7 @@ namespace Emby.Server.Implementations.Library.Validators
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error validating IBN entry {person}", person);
+                    _logger.LogError(ex, "Error validating IBN entry {Person}", person);
                 }
 
                 // Update progress
@@ -91,7 +97,7 @@ namespace Emby.Server.Implementations.Library.Validators
 
             var deadEntities = _libraryManager.GetItemList(new InternalItemsQuery
             {
-                IncludeItemTypes = new[] { typeof(Person).Name },
+                IncludeItemTypes = [BaseItemKind.Person],
                 IsDeadPerson = true,
                 IsLocked = false
             });

@@ -1,3 +1,5 @@
+#pragma warning disable CS1591
+
 using System;
 
 namespace MediaBrowser.Controller.LiveTv
@@ -7,14 +9,9 @@ namespace MediaBrowser.Controller.LiveTv
     /// </summary>
     public class LiveTvConflictException : Exception
     {
-        public LiveTvConflictException()
-        {
-
-        }
         public LiveTvConflictException(string message)
             : base(message)
         {
-
         }
     }
 }

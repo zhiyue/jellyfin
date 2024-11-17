@@ -5,16 +5,18 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Extensions.Json;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Extensions;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.IO;
 using MediaBrowser.Model.MediaInfo;
-using MediaBrowser.Model.Serialization;
 using Microsoft.Extensions.Logging;
 
 namespace Emby.Server.Implementations.Library
@@ -23,69 +25,78 @@ namespace Emby.Server.Implementations.Library
     {
         private readonly IMediaEncoder _mediaEncoder;
         private readonly ILogger _logger;
+        private readonly IApplicationPaths _appPaths;
+        private readonly JsonSerializerOptions _jsonOptions = JsonDefaults.Options;
 
-        private IJsonSerializer _json;
-        private IApplicationPaths _appPaths;
-
-        public LiveStreamHelper(IMediaEncoder mediaEncoder, ILogger logger, IJsonSerializer json, IApplicationPaths appPaths)
+        public LiveStreamHelper(IMediaEncoder mediaEncoder, ILogger logger, IApplicationPaths appPaths)
         {
             _mediaEncoder = mediaEncoder;
             _logger = logger;
-            _json = json;
             _appPaths = appPaths;
         }
 
-        public async Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string cacheKey, bool addProbeDelay, CancellationToken cancellationToken)
+        public async Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, CancellationToken cancellationToken)
         {
             var originalRuntime = mediaSource.RunTimeTicks;
 
             var now = DateTime.UtcNow;
 
-            MediaInfo mediaInfo = null;
+            MediaInfo? mediaInfo = null;
             var cacheFilePath = string.IsNullOrEmpty(cacheKey) ? null : Path.Combine(_appPaths.CachePath, "mediainfo", cacheKey.GetMD5().ToString("N", CultureInfo.InvariantCulture) + ".json");
 
-            if (!string.IsNullOrEmpty(cacheKey))
+            if (cacheFilePath is not null)
             {
                 try
                 {
-                    mediaInfo = _json.DeserializeFromFile<MediaInfo>(cacheFilePath);
+                    FileStream jsonStream = AsyncFile.OpenRead(cacheFilePath);
 
-                    //_logger.LogDebug("Found cached media info");
+                    await using (jsonStream.ConfigureAwait(false))
+                    {
+                        mediaInfo = await JsonSerializer.DeserializeAsync<MediaInfo>(jsonStream, _jsonOptions, cancellationToken).ConfigureAwait(false);
+                        // _logger.LogDebug("Found cached media info");
+                    }
                 }
-                catch
+                catch (IOException ex)
                 {
+                    _logger.LogDebug(ex, "Could not open cached media info");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error opening cached media info");
                 }
             }
 
-            if (mediaInfo == null)
+            if (mediaInfo is null)
             {
                 if (addProbeDelay)
                 {
                     var delayMs = mediaSource.AnalyzeDurationMs ?? 0;
                     delayMs = Math.Max(3000, delayMs);
-                    if (delayMs > 0)
-                    {
-                        _logger.LogInformation("Waiting {0}ms before probing the live stream", delayMs);
-                        await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
-                    }
+                    _logger.LogInformation("Waiting {0}ms before probing the live stream", delayMs);
+                    await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
                 }
 
                 mediaSource.AnalyzeDurationMs = 3000;
 
-                mediaInfo = await _mediaEncoder.GetMediaInfo(new MediaInfoRequest
+                mediaInfo = await _mediaEncoder.GetMediaInfo(
+                    new MediaInfoRequest
+                    {
+                        MediaSource = mediaSource,
+                        MediaType = isAudio ? DlnaProfileType.Audio : DlnaProfileType.Video,
+                        ExtractChapters = false
+                    },
+                    cancellationToken).ConfigureAwait(false);
+
+                if (cacheFilePath is not null)
                 {
-                    MediaSource = mediaSource,
-                    MediaType = isAudio ? DlnaProfileType.Audio : DlnaProfileType.Video,
-                    ExtractChapters = false
+                    Directory.CreateDirectory(Path.GetDirectoryName(cacheFilePath) ?? throw new InvalidOperationException("Path can't be a root directory."));
+                    FileStream createStream = AsyncFile.OpenWrite(cacheFilePath);
+                    await using (createStream.ConfigureAwait(false))
+                    {
+                        await JsonSerializer.SerializeAsync(createStream, mediaInfo, _jsonOptions, cancellationToken).ConfigureAwait(false);
+                    }
 
-                }, cancellationToken).ConfigureAwait(false);
-
-                if (cacheFilePath != null)
-                {
-                    Directory.CreateDirectory(Path.GetDirectoryName(cacheFilePath));
-                    _json.SerializeToFile(mediaInfo, cacheFilePath);
-
-                    //_logger.LogDebug("Saved media info to {0}", cacheFilePath);
+                    _logger.LogDebug("Saved media info to {0}", cacheFilePath);
                 }
             }
 
@@ -126,9 +137,9 @@ namespace Emby.Server.Implementations.Library
                 mediaSource.RunTimeTicks = null;
             }
 
-            var audioStream = mediaStreams.FirstOrDefault(i => i.Type == MediaBrowser.Model.Entities.MediaStreamType.Audio);
+            var audioStream = mediaStreams.FirstOrDefault(i => i.Type == MediaStreamType.Audio);
 
-            if (audioStream == null || audioStream.Index == -1)
+            if (audioStream is null || audioStream.Index == -1)
             {
                 mediaSource.DefaultAudioStreamIndex = null;
             }
@@ -137,8 +148,8 @@ namespace Emby.Server.Implementations.Library
                 mediaSource.DefaultAudioStreamIndex = audioStream.Index;
             }
 
-            var videoStream = mediaStreams.FirstOrDefault(i => i.Type == MediaBrowser.Model.Entities.MediaStreamType.Video);
-            if (videoStream != null)
+            var videoStream = mediaStreams.FirstOrDefault(i => i.Type == MediaStreamType.Video);
+            if (videoStream is not null)
             {
                 if (!videoStream.BitRate.HasValue)
                 {
@@ -148,17 +159,14 @@ namespace Emby.Server.Implementations.Library
                     {
                         videoStream.BitRate = 30000000;
                     }
-
                     else if (width >= 1900)
                     {
                         videoStream.BitRate = 20000000;
                     }
-
                     else if (width >= 1200)
                     {
                         videoStream.BitRate = 8000000;
                     }
-
                     else if (width >= 700)
                     {
                         videoStream.BitRate = 2000000;

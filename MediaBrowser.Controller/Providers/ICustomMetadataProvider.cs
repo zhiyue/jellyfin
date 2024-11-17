@@ -1,3 +1,5 @@
+#pragma warning disable CS1591
+
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Entities;
@@ -13,12 +15,12 @@ namespace MediaBrowser.Controller.Providers
         where TItemType : BaseItem
     {
         /// <summary>
-        /// Fetches the asynchronous.
+        /// Fetches the metadata asynchronously.
         /// </summary>
         /// <param name="item">The item.</param>
-        /// <param name="options">The options.</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>Task{ItemUpdateType}.</returns>
+        /// <param name="options">The <see cref="MetadataRefreshOptions"/>.</param>
+        /// <param name="cancellationToken">The <see cref="CancellationToken"/>.</param>
+        /// <returns>A <see cref="Task"/> fetching the <see cref="ItemUpdateType"/>.</returns>
         Task<ItemUpdateType> FetchAsync(TItemType item, MetadataRefreshOptions options, CancellationToken cancellationToken);
     }
 }

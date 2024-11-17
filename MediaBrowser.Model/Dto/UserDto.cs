@@ -1,3 +1,4 @@
+#nullable disable
 using System;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Users;
@@ -5,10 +6,19 @@ using MediaBrowser.Model.Users;
 namespace MediaBrowser.Model.Dto
 {
     /// <summary>
-    /// Class UserDto
+    /// Class UserDto.
     /// </summary>
     public class UserDto : IItemDto, IHasServerId
     {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="UserDto"/> class.
+        /// </summary>
+        public UserDto()
+        {
+            Configuration = new UserConfiguration();
+            Policy = new UserPolicy();
+        }
+
         /// <summary>
         /// Gets or sets the name.
         /// </summary>
@@ -56,8 +66,12 @@ namespace MediaBrowser.Model.Dto
         /// Gets or sets a value indicating whether this instance has configured easy password.
         /// </summary>
         /// <value><c>true</c> if this instance has configured easy password; otherwise, <c>false</c>.</value>
+        [Obsolete("Easy Password has been replaced with Quick Connect")]
         public bool HasConfiguredEasyPassword { get; set; }
 
+        /// <summary>
+        /// Gets or sets whether async login is enabled or not.
+        /// </summary>
         public bool? EnableAutoLogin { get; set; }
 
         /// <summary>
@@ -90,15 +104,7 @@ namespace MediaBrowser.Model.Dto
         /// <value>The primary image aspect ratio.</value>
         public double? PrimaryImageAspectRatio { get; set; }
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="UserDto"/> class.
-        /// </summary>
-        public UserDto()
-        {
-            Configuration = new UserConfiguration();
-            Policy = new UserPolicy();
-        }
-
+        /// <inheritdoc />
         public override string ToString()
         {
             return Name ?? base.ToString();

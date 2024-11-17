@@ -1,3 +1,5 @@
+#pragma warning disable CS1591
+
 using System;
 
 namespace MediaBrowser.Model.System
@@ -26,6 +28,6 @@ namespace MediaBrowser.Model.System
         /// Gets or sets the name.
         /// </summary>
         /// <value>The name.</value>
-        public string Name { get; set; }
+        public required string Name { get; set; }
     }
 }

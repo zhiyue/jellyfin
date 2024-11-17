@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Library;
@@ -24,7 +25,7 @@ namespace Emby.Server.Implementations.Library.Validators
         /// <summary>
         /// The logger.
         /// </summary>
-        private readonly ILogger _logger;
+        private readonly ILogger<ArtistsValidator> _logger;
         private readonly IItemRepository _itemRepo;
 
         /// <summary>
@@ -33,7 +34,7 @@ namespace Emby.Server.Implementations.Library.Validators
         /// <param name="libraryManager">The library manager.</param>
         /// <param name="logger">The logger.</param>
         /// <param name="itemRepo">The item repository.</param>
-        public ArtistsValidator(ILibraryManager libraryManager, ILogger logger, IItemRepository itemRepo)
+        public ArtistsValidator(ILibraryManager libraryManager, ILogger<ArtistsValidator> logger, IItemRepository itemRepo)
         {
             _libraryManager = libraryManager;
             _logger = logger;
@@ -81,7 +82,7 @@ namespace Emby.Server.Implementations.Library.Validators
 
             var deadEntities = _libraryManager.GetItemList(new InternalItemsQuery
             {
-                IncludeItemTypes = new[] { typeof(MusicArtist).Name },
+                IncludeItemTypes = new[] { BaseItemKind.MusicArtist },
                 IsDeadArtist = true,
                 IsLocked = false
             }).Cast<MusicArtist>().ToList();
@@ -95,11 +96,13 @@ namespace Emby.Server.Implementations.Library.Validators
 
                 _logger.LogInformation("Deleting dead {2} {0} {1}.", item.Id.ToString("N", CultureInfo.InvariantCulture), item.Name, item.GetType().Name);
 
-                _libraryManager.DeleteItem(item, new DeleteOptions
-                {
-                    DeleteFileLocation = false
-
-                }, false);
+                _libraryManager.DeleteItem(
+                    item,
+                    new DeleteOptions
+                    {
+                        DeleteFileLocation = false
+                    },
+                    false);
             }
 
             progress.Report(100);

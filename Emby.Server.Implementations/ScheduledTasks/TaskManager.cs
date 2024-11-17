@@ -3,80 +3,52 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Jellyfin.Data.Events;
 using MediaBrowser.Common.Configuration;
-using MediaBrowser.Model.Events;
-using MediaBrowser.Model.IO;
-using MediaBrowser.Model.Serialization;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
 namespace Emby.Server.Implementations.ScheduledTasks
 {
     /// <summary>
-    /// Class TaskManager
+    /// Class TaskManager.
     /// </summary>
     public class TaskManager : ITaskManager
     {
-        public event EventHandler<GenericEventArgs<IScheduledTaskWorker>> TaskExecuting;
-        public event EventHandler<TaskCompletionEventArgs> TaskCompleted;
-
         /// <summary>
-        /// Gets the list of Scheduled Tasks
-        /// </summary>
-        /// <value>The scheduled tasks.</value>
-        public IScheduledTaskWorker[] ScheduledTasks { get; private set; }
-
-        /// <summary>
-        /// The _task queue
+        /// The _task queue.
         /// </summary>
         private readonly ConcurrentQueue<Tuple<Type, TaskOptions>> _taskQueue =
             new ConcurrentQueue<Tuple<Type, TaskOptions>>();
 
-        /// <summary>
-        /// Gets or sets the json serializer.
-        /// </summary>
-        /// <value>The json serializer.</value>
-        private readonly IJsonSerializer _jsonSerializer;
-
-        /// <summary>
-        /// Gets or sets the application paths.
-        /// </summary>
-        /// <value>The application paths.</value>
         private readonly IApplicationPaths _applicationPaths;
-
-        /// <summary>
-        /// Gets the logger.
-        /// </summary>
-        /// <value>The logger.</value>
-        private readonly ILogger _logger;
-        private readonly IFileSystem _fileSystem;
+        private readonly ILogger<TaskManager> _logger;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="TaskManager" /> class.
         /// </summary>
         /// <param name="applicationPaths">The application paths.</param>
-        /// <param name="jsonSerializer">The json serializer.</param>
-        /// <param name="loggerFactory">The logger factory.</param>
-        /// <param name="fileSystem">The filesystem manager.</param>
+        /// <param name="logger">The logger.</param>
         public TaskManager(
             IApplicationPaths applicationPaths,
-            IJsonSerializer jsonSerializer,
-            ILoggerFactory loggerFactory,
-            IFileSystem fileSystem)
+            ILogger<TaskManager> logger)
         {
             _applicationPaths = applicationPaths;
-            _jsonSerializer = jsonSerializer;
-            _logger = loggerFactory.CreateLogger(nameof(TaskManager));
-            _fileSystem = fileSystem;
+            _logger = logger;
 
             ScheduledTasks = Array.Empty<IScheduledTaskWorker>();
         }
 
-        /// <summary>
-        /// Cancels if running and queue.
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <param name="options">Task options.</param>
+        /// <inheritdoc />
+        public event EventHandler<GenericEventArgs<IScheduledTaskWorker>>? TaskExecuting;
+
+        /// <inheritdoc />
+        public event EventHandler<TaskCompletionEventArgs>? TaskCompleted;
+
+        /// <inheritdoc />
+        public IReadOnlyList<IScheduledTaskWorker> ScheduledTasks { get; private set; }
+
+        /// <inheritdoc />
         public void CancelIfRunningAndQueue<T>(TaskOptions options)
             where T : IScheduledTask
         {
@@ -86,16 +58,14 @@ namespace Emby.Server.Implementations.ScheduledTasks
             QueueScheduledTask<T>(options);
         }
 
+        /// <inheritdoc />
         public void CancelIfRunningAndQueue<T>()
                where T : IScheduledTask
         {
             CancelIfRunningAndQueue<T>(new TaskOptions());
         }
 
-        /// <summary>
-        /// Cancels if running
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
+        /// <inheritdoc />
         public void CancelIfRunning<T>()
                  where T : IScheduledTask
         {
@@ -103,17 +73,13 @@ namespace Emby.Server.Implementations.ScheduledTasks
             ((ScheduledTaskWorker)task).CancelIfRunning();
         }
 
-        /// <summary>
-        /// Queues the scheduled task.
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <param name="options">Task options</param>
+        /// <inheritdoc />
         public void QueueScheduledTask<T>(TaskOptions options)
             where T : IScheduledTask
         {
             var scheduledTask = ScheduledTasks.FirstOrDefault(t => t.ScheduledTask.GetType() == typeof(T));
 
-            if (scheduledTask == null)
+            if (scheduledTask is null)
             {
                 _logger.LogError("Unable to find scheduled task of type {0} in QueueScheduledTask.", typeof(T).Name);
             }
@@ -123,12 +89,14 @@ namespace Emby.Server.Implementations.ScheduledTasks
             }
         }
 
+        /// <inheritdoc />
         public void QueueScheduledTask<T>()
             where T : IScheduledTask
         {
             QueueScheduledTask<T>(new TaskOptions());
         }
 
+        /// <inheritdoc />
         public void QueueIfNotRunning<T>()
             where T : IScheduledTask
         {
@@ -140,12 +108,13 @@ namespace Emby.Server.Implementations.ScheduledTasks
             }
         }
 
+        /// <inheritdoc />
         public void Execute<T>()
             where T : IScheduledTask
         {
             var scheduledTask = ScheduledTasks.FirstOrDefault(t => t.ScheduledTask.GetType() == typeof(T));
 
-            if (scheduledTask == null)
+            if (scheduledTask is null)
             {
                 _logger.LogError("Unable to find scheduled task of type {0} in Execute.", typeof(T).Name);
             }
@@ -153,7 +122,7 @@ namespace Emby.Server.Implementations.ScheduledTasks
             {
                 var type = scheduledTask.ScheduledTask.GetType();
 
-                _logger.LogInformation("Queueing task {0}", type.Name);
+                _logger.LogDebug("Queuing task {0}", type.Name);
 
                 lock (_taskQueue)
                 {
@@ -165,16 +134,12 @@ namespace Emby.Server.Implementations.ScheduledTasks
             }
         }
 
-        /// <summary>
-        /// Queues the scheduled task.
-        /// </summary>
-        /// <param name="task">The task.</param>
-        /// <param name="options">The task options.</param>
+        /// <inheritdoc />
         public void QueueScheduledTask(IScheduledTask task, TaskOptions options)
         {
             var scheduledTask = ScheduledTasks.FirstOrDefault(t => t.ScheduledTask.GetType() == task.GetType());
 
-            if (scheduledTask == null)
+            if (scheduledTask is null)
             {
                 _logger.LogError("Unable to find scheduled task of type {0} in QueueScheduledTask.", task.GetType().Name);
             }
@@ -193,7 +158,7 @@ namespace Emby.Server.Implementations.ScheduledTasks
         {
             var type = task.ScheduledTask.GetType();
 
-            _logger.LogInformation("Queueing task {0}", type.Name);
+            _logger.LogDebug("Queuing task {0}", type.Name);
 
             lock (_taskQueue)
             {
@@ -207,23 +172,19 @@ namespace Emby.Server.Implementations.ScheduledTasks
             }
         }
 
-        /// <summary>
-        /// Adds the tasks.
-        /// </summary>
-        /// <param name="tasks">The tasks.</param>
+        /// <inheritdoc />
         public void AddTasks(IEnumerable<IScheduledTask> tasks)
         {
-            var list = tasks.Select(t => new ScheduledTaskWorker(t, _applicationPaths, this, _jsonSerializer, _logger, _fileSystem));
+            var list = tasks.Select(t => new ScheduledTaskWorker(t, _applicationPaths, this, _logger));
 
             ScheduledTasks = ScheduledTasks.Concat(list).ToArray();
         }
 
-        /// <summary>
-        /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
-        /// </summary>
+        /// <inheritdoc />
         public void Dispose()
         {
             Dispose(true);
+            GC.SuppressFinalize(this);
         }
 
         /// <summary>
@@ -238,11 +199,13 @@ namespace Emby.Server.Implementations.ScheduledTasks
             }
         }
 
+        /// <inheritdoc />
         public void Cancel(IScheduledTaskWorker task)
         {
             ((ScheduledTaskWorker)task).Cancel();
         }
 
+        /// <inheritdoc />
         public Task Execute(IScheduledTaskWorker task, TaskOptions options)
         {
             return ((ScheduledTaskWorker)task).Execute(options);
@@ -254,10 +217,7 @@ namespace Emby.Server.Implementations.ScheduledTasks
         /// <param name="task">The task.</param>
         internal void OnTaskExecuting(IScheduledTaskWorker task)
         {
-            TaskExecuting?.Invoke(this, new GenericEventArgs<IScheduledTaskWorker>
-            {
-                Argument = task
-            });
+            TaskExecuting?.Invoke(this, new GenericEventArgs<IScheduledTaskWorker>(task));
         }
 
         /// <summary>
@@ -267,11 +227,7 @@ namespace Emby.Server.Implementations.ScheduledTasks
         /// <param name="result">The result.</param>
         internal void OnTaskCompleted(IScheduledTaskWorker task, TaskResult result)
         {
-            TaskCompleted?.Invoke(task, new TaskCompletionEventArgs
-            {
-                Result = result,
-                Task = task
-            });
+            TaskCompleted?.Invoke(task, new TaskCompletionEventArgs(task, result));
 
             ExecuteQueuedTasks();
         }
@@ -281,9 +237,6 @@ namespace Emby.Server.Implementations.ScheduledTasks
         /// </summary>
         private void ExecuteQueuedTasks()
         {
-            _logger.LogInformation("ExecuteQueuedTasks");
-
-            // Execute queued tasks
             lock (_taskQueue)
             {
                 var list = new List<Tuple<Type, TaskOptions>>();

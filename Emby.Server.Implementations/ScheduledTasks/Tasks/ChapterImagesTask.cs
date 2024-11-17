@@ -4,6 +4,8 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
+using Jellyfin.Extensions;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
@@ -11,88 +13,97 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Providers;
-using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.IO;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
-namespace Emby.Server.Implementations.ScheduledTasks
+namespace Emby.Server.Implementations.ScheduledTasks.Tasks
 {
     /// <summary>
     /// Class ChapterImagesTask.
     /// </summary>
     public class ChapterImagesTask : IScheduledTask
     {
-        /// <summary>
-        /// The _logger.
-        /// </summary>
-        private readonly ILogger _logger;
-
-        /// <summary>
-        /// The _library manager.
-        /// </summary>
+        private readonly ILogger<ChapterImagesTask> _logger;
         private readonly ILibraryManager _libraryManager;
-
         private readonly IItemRepository _itemRepo;
-
         private readonly IApplicationPaths _appPaths;
-
         private readonly IEncodingManager _encodingManager;
         private readonly IFileSystem _fileSystem;
+        private readonly ILocalizationManager _localization;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ChapterImagesTask" /> class.
         /// </summary>
-        public ChapterImagesTask(ILoggerFactory loggerFactory, ILibraryManager libraryManager, IItemRepository itemRepo, IApplicationPaths appPaths, IEncodingManager encodingManager, IFileSystem fileSystem)
+        /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
+        /// <param name="libraryManager">Instance of the <see cref="ILibraryManager"/> interface.</param>
+        /// <param name="itemRepo">Instance of the <see cref="IItemRepository"/> interface.</param>
+        /// <param name="appPaths">Instance of the <see cref="IApplicationPaths"/> interface.</param>
+        /// <param name="encodingManager">Instance of the <see cref="IEncodingManager"/> interface.</param>
+        /// <param name="fileSystem">Instance of the <see cref="IFileSystem"/> interface.</param>
+        /// <param name="localization">Instance of the <see cref="ILocalizationManager"/> interface.</param>
+        public ChapterImagesTask(
+            ILogger<ChapterImagesTask> logger,
+            ILibraryManager libraryManager,
+            IItemRepository itemRepo,
+            IApplicationPaths appPaths,
+            IEncodingManager encodingManager,
+            IFileSystem fileSystem,
+            ILocalizationManager localization)
         {
-            _logger = loggerFactory.CreateLogger(GetType().Name);
+            _logger = logger;
             _libraryManager = libraryManager;
             _itemRepo = itemRepo;
             _appPaths = appPaths;
             _encodingManager = encodingManager;
             _fileSystem = fileSystem;
+            _localization = localization;
         }
 
-        /// <summary>
-        /// Creates the triggers that define when the task will run.
-        /// </summary>
+        /// <inheritdoc />
+        public string Name => _localization.GetLocalizedString("TaskRefreshChapterImages");
+
+        /// <inheritdoc />
+        public string Description => _localization.GetLocalizedString("TaskRefreshChapterImagesDescription");
+
+        /// <inheritdoc />
+        public string Category => _localization.GetLocalizedString("TasksLibraryCategory");
+
+        /// <inheritdoc />
+        public string Key => "RefreshChapterImages";
+
+        /// <inheritdoc />
         public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
         {
-            return new[]
-            {
+            return
+            [
                 new TaskTriggerInfo
                 {
                     Type = TaskTriggerInfo.TriggerDaily,
                     TimeOfDayTicks = TimeSpan.FromHours(2).Ticks,
                     MaxRuntimeTicks = TimeSpan.FromHours(4).Ticks
                 }
-            };
+            ];
         }
 
-        /// <summary>
-        /// Returns the task to be executed
-        /// </summary>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <param name="progress">The progress.</param>
-        /// <returns>Task.</returns>
-        public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
+        /// <inheritdoc />
+        public async Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
         {
             var videos = _libraryManager.GetItemList(new InternalItemsQuery
             {
-                MediaTypes = new[] { MediaType.Video },
+                MediaTypes = [MediaType.Video],
                 IsFolder = false,
                 Recursive = true,
                 DtoOptions = new DtoOptions(false)
                 {
                     EnableImages = false
                 },
-                SourceTypes = new SourceType[] { SourceType.Library },
-                HasChapterImages = false,
+                SourceTypes = [SourceType.Library],
                 IsVirtualItem = false
-
             })
-                .OfType<Video>()
-                .ToList();
+            .OfType<Video>()
+            .ToList();
 
             var numComplete = 0;
 
@@ -104,8 +115,8 @@ namespace Emby.Server.Implementations.ScheduledTasks
             {
                 try
                 {
-                    previouslyFailedImages = File.ReadAllText(failHistoryPath)
-                        .Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries)
+                    previouslyFailedImages = (await File.ReadAllTextAsync(failHistoryPath, cancellationToken).ConfigureAwait(false))
+                        .Split('|', StringSplitOptions.RemoveEmptyEntries)
                         .ToList();
                 }
                 catch (IOException)
@@ -126,7 +137,7 @@ namespace Emby.Server.Implementations.ScheduledTasks
 
                 var key = video.Path + video.DateModified.Ticks;
 
-                var extract = !previouslyFailedImages.Contains(key, StringComparer.OrdinalIgnoreCase);
+                var extract = !previouslyFailedImages.Contains(key, StringComparison.OrdinalIgnoreCase);
 
                 try
                 {
@@ -139,11 +150,13 @@ namespace Emby.Server.Implementations.ScheduledTasks
                         previouslyFailedImages.Add(key);
 
                         var parentPath = Path.GetDirectoryName(failHistoryPath);
+                        if (parentPath is not null)
+                        {
+                            Directory.CreateDirectory(parentPath);
+                        }
 
-                        Directory.CreateDirectory(parentPath);
-
-                        string text = string.Join("|", previouslyFailedImages);
-                        File.WriteAllText(failHistoryPath, text);
+                        string text = string.Join('|', previouslyFailedImages);
+                        await File.WriteAllTextAsync(failHistoryPath, text, cancellationToken).ConfigureAwait(false);
                     }
 
                     numComplete++;
@@ -152,26 +165,13 @@ namespace Emby.Server.Implementations.ScheduledTasks
 
                     progress.Report(100 * percent);
                 }
-                catch (ObjectDisposedException)
+                catch (ObjectDisposedException ex)
                 {
-                    //TODO Investigate and properly fix.
+                    // TODO Investigate and properly fix.
+                    _logger.LogError(ex, "Object Disposed");
                     break;
                 }
             }
         }
-
-        public string Name => "Chapter image extraction";
-
-        public string Description => "Creates thumbnails for videos that have chapters.";
-
-        public string Category => "Library";
-
-        public string Key => "RefreshChapterImages";
-
-        public bool IsHidden => false;
-
-        public bool IsEnabled => true;
-
-        public bool IsLogged => true;
     }
 }

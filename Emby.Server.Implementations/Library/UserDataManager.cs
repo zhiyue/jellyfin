@@ -1,10 +1,10 @@
-#pragma warning disable CS1591
-
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Threading;
+using Jellyfin.Data.Entities;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
@@ -12,7 +12,8 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
-using Microsoft.Extensions.Logging;
+using AudioBook = MediaBrowser.Controller.Entities.AudioBook;
+using Book = MediaBrowser.Controller.Entities.Book;
 
 namespace Emby.Server.Implementations.Library
 {
@@ -21,47 +22,38 @@ namespace Emby.Server.Implementations.Library
     /// </summary>
     public class UserDataManager : IUserDataManager
     {
-        public event EventHandler<UserDataSaveEventArgs> UserDataSaved;
-
         private readonly ConcurrentDictionary<string, UserItemData> _userData =
             new ConcurrentDictionary<string, UserItemData>(StringComparer.OrdinalIgnoreCase);
 
-        private readonly ILogger _logger;
         private readonly IServerConfigurationManager _config;
-
-        private Func<IUserManager> _userManager;
-
-        public UserDataManager(ILoggerFactory loggerFactory, IServerConfigurationManager config, Func<IUserManager> userManager)
-        {
-            _config = config;
-            _logger = loggerFactory.CreateLogger(GetType().Name);
-            _userManager = userManager;
-        }
+        private readonly IUserManager _userManager;
+        private readonly IUserDataRepository _repository;
 
         /// <summary>
-        /// Gets or sets the repository.
+        /// Initializes a new instance of the <see cref="UserDataManager"/> class.
         /// </summary>
-        /// <value>The repository.</value>
-        public IUserDataRepository Repository { get; set; }
-
-        public void SaveUserData(Guid userId, BaseItem item, UserItemData userData, UserDataSaveReason reason, CancellationToken cancellationToken)
+        /// <param name="config">Instance of the <see cref="IServerConfigurationManager"/> interface.</param>
+        /// <param name="userManager">Instance of the <see cref="IUserManager"/> interface.</param>
+        /// <param name="repository">Instance of the <see cref="IUserDataRepository"/> interface.</param>
+        public UserDataManager(
+            IServerConfigurationManager config,
+            IUserManager userManager,
+            IUserDataRepository repository)
         {
-            var user = _userManager().GetUserById(userId);
-
-            SaveUserData(user, item, userData, reason, cancellationToken);
+            _config = config;
+            _userManager = userManager;
+            _repository = repository;
         }
 
+        /// <inheritdoc />
+        public event EventHandler<UserDataSaveEventArgs>? UserDataSaved;
+
+        /// <inheritdoc />
         public void SaveUserData(User user, BaseItem item, UserItemData userData, UserDataSaveReason reason, CancellationToken cancellationToken)
         {
-            if (userData == null)
-            {
-                throw new ArgumentNullException(nameof(userData));
-            }
+            ArgumentNullException.ThrowIfNull(userData);
 
-            if (item == null)
-            {
-                throw new ArgumentNullException(nameof(item));
-            }
+            ArgumentNullException.ThrowIfNull(item);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -71,11 +63,11 @@ namespace Emby.Server.Implementations.Library
 
             foreach (var key in keys)
             {
-                Repository.SaveUserData(userId, key, userData, cancellationToken);
+                _repository.SaveUserData(userId, key, userData, cancellationToken);
             }
 
             var cacheKey = GetCacheKey(userId, item.Id);
-            _userData.AddOrUpdate(cacheKey, userData, (k, v) => userData);
+            _userData.AddOrUpdate(cacheKey, userData, (_, _) => userData);
 
             UserDataSaved?.Invoke(this, new UserDataSaveEventArgs
             {
@@ -87,53 +79,67 @@ namespace Emby.Server.Implementations.Library
             });
         }
 
-        /// <summary>
-        /// Save the provided user data for the given user.  Batch operation. Does not fire any events or update the cache.
-        /// </summary>
-        /// <param name="userId"></param>
-        /// <param name="userData"></param>
-        /// <param name="cancellationToken"></param>
-        /// <returns></returns>
-        public void SaveAllUserData(Guid userId, UserItemData[] userData, CancellationToken cancellationToken)
+        /// <inheritdoc />
+        public void SaveUserData(User user, BaseItem item, UpdateUserItemDataDto userDataDto, UserDataSaveReason reason)
         {
-            var user = _userManager().GetUserById(userId);
+            ArgumentNullException.ThrowIfNull(user);
+            ArgumentNullException.ThrowIfNull(item);
+            ArgumentNullException.ThrowIfNull(userDataDto);
 
-            Repository.SaveAllUserData(user.InternalId, userData, cancellationToken);
+            var userData = GetUserData(user, item);
+
+            if (userDataDto.PlaybackPositionTicks.HasValue)
+            {
+                userData.PlaybackPositionTicks = userDataDto.PlaybackPositionTicks.Value;
+            }
+
+            if (userDataDto.PlayCount.HasValue)
+            {
+                userData.PlayCount = userDataDto.PlayCount.Value;
+            }
+
+            if (userDataDto.IsFavorite.HasValue)
+            {
+                userData.IsFavorite = userDataDto.IsFavorite.Value;
+            }
+
+            if (userDataDto.Likes.HasValue)
+            {
+                userData.Likes = userDataDto.Likes.Value;
+            }
+
+            if (userDataDto.Played.HasValue)
+            {
+                userData.Played = userDataDto.Played.Value;
+            }
+
+            if (userDataDto.LastPlayedDate.HasValue)
+            {
+                userData.LastPlayedDate = userDataDto.LastPlayedDate.Value;
+            }
+
+            if (userDataDto.Rating.HasValue)
+            {
+                userData.Rating = userDataDto.Rating.Value;
+            }
+
+            SaveUserData(user, item, userData, reason, CancellationToken.None);
         }
 
-        /// <summary>
-        /// Retrieve all user data for the given user
-        /// </summary>
-        /// <param name="userId"></param>
-        /// <returns></returns>
-        public List<UserItemData> GetAllUserData(Guid userId)
-        {
-            var user = _userManager().GetUserById(userId);
-
-            return Repository.GetAllUserData(user.InternalId);
-        }
-
-        public UserItemData GetUserData(Guid userId, Guid itemId, List<string> keys)
-        {
-            var user = _userManager().GetUserById(userId);
-
-            return GetUserData(user, itemId, keys);
-        }
-
-        public UserItemData GetUserData(User user, Guid itemId, List<string> keys)
+        private UserItemData GetUserData(User user, Guid itemId, List<string> keys)
         {
             var userId = user.InternalId;
 
             var cacheKey = GetCacheKey(userId, itemId);
 
-            return _userData.GetOrAdd(cacheKey, k => GetUserDataInternal(userId, keys));
+            return _userData.GetOrAdd(cacheKey, _ => GetUserDataInternal(userId, keys));
         }
 
         private UserItemData GetUserDataInternal(long internalUserId, List<string> keys)
         {
-            var userData = Repository.GetUserData(internalUserId, keys);
+            var userData = _repository.GetUserData(internalUserId, keys);
 
-            if (userData != null)
+            if (userData is not null)
             {
                 return userData;
             }
@@ -146,7 +152,7 @@ namespace Emby.Server.Implementations.Library
                 };
             }
 
-            return null;
+            throw new UnreachableException();
         }
 
         /// <summary>
@@ -158,26 +164,18 @@ namespace Emby.Server.Implementations.Library
             return internalUserId.ToString(CultureInfo.InvariantCulture) + "-" + itemId.ToString("N", CultureInfo.InvariantCulture);
         }
 
+        /// <inheritdoc />
         public UserItemData GetUserData(User user, BaseItem item)
         {
             return GetUserData(user, item.Id, item.GetUserDataKeys());
         }
 
-        public UserItemData GetUserData(Guid userId, BaseItem item)
-        {
-            return GetUserData(userId, item.Id, item.GetUserDataKeys());
-        }
-
+        /// <inheritdoc />
         public UserItemDataDto GetUserDataDto(BaseItem item, User user)
-        {
-            var userData = GetUserData(user, item);
-            var dto = GetUserItemDataDto(userData);
+            => GetUserDataDto(item, null, user, new DtoOptions());
 
-            item.FillUserDataDtoValues(dto, userData, null, user, new DtoOptions());
-            return dto;
-        }
-
-        public UserItemDataDto GetUserDataDto(BaseItem item, BaseItemDto itemDto, User user, DtoOptions options)
+        /// <inheritdoc />
+        public UserItemDataDto GetUserDataDto(BaseItem item, BaseItemDto? itemDto, User user, DtoOptions options)
         {
             var userData = GetUserData(user, item);
             var dto = GetUserItemDataDto(userData);
@@ -187,17 +185,14 @@ namespace Emby.Server.Implementations.Library
         }
 
         /// <summary>
-        /// Converts a UserItemData to a DTOUserItemData
+        /// Converts a UserItemData to a DTOUserItemData.
         /// </summary>
         /// <param name="data">The data.</param>
         /// <returns>DtoUserItemData.</returns>
-        /// <exception cref="ArgumentNullException"></exception>
+        /// <exception cref="ArgumentNullException"><paramref name="data"/> is <c>null</c>.</exception>
         private UserItemDataDto GetUserItemDataDto(UserItemData data)
         {
-            if (data == null)
-            {
-                throw new ArgumentNullException(nameof(data));
-            }
+            ArgumentNullException.ThrowIfNull(data);
 
             return new UserItemDataDto
             {
@@ -212,6 +207,7 @@ namespace Emby.Server.Implementations.Library
             };
         }
 
+        /// <inheritdoc />
         public bool UpdatePlayState(BaseItem item, UserItemData data, long? reportedPositionTicks)
         {
             var playedToCompletion = false;
@@ -222,7 +218,7 @@ namespace Emby.Server.Implementations.Library
             var hasRuntime = runtimeTicks > 0;
 
             // If a position has been reported, and if we know the duration
-            if (positionTicks > 0 && hasRuntime)
+            if (positionTicks > 0 && hasRuntime && item is not AudioBook && item is not Book)
             {
                 var pctIn = decimal.Divide(positionTicks, runtimeTicks) * 100;
 
@@ -246,6 +242,23 @@ namespace Emby.Server.Implementations.Library
                         positionTicks = 0;
                         data.Played = playedToCompletion = true;
                     }
+                }
+            }
+            else if (positionTicks > 0 && hasRuntime && item is AudioBook)
+            {
+                var playbackPositionInMinutes = TimeSpan.FromTicks(positionTicks).TotalMinutes;
+                var remainingTimeInMinutes = TimeSpan.FromTicks(runtimeTicks - positionTicks).TotalMinutes;
+
+                if (playbackPositionInMinutes < _config.Configuration.MinAudiobookResume)
+                {
+                    // ignore progress during the beginning
+                    positionTicks = 0;
+                }
+                else if (remainingTimeInMinutes < _config.Configuration.MaxAudiobookResume || positionTicks >= runtimeTicks)
+                {
+                    // mark as completed close to the end
+                    positionTicks = 0;
+                    data.Played = playedToCompletion = true;
                 }
             }
             else if (!hasRuntime)

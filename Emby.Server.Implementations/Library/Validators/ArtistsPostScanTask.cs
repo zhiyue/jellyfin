@@ -16,7 +16,7 @@ namespace Emby.Server.Implementations.Library.Validators
         /// The _library manager.
         /// </summary>
         private readonly ILibraryManager _libraryManager;
-        private readonly ILogger _logger;
+        private readonly ILogger<ArtistsValidator> _logger;
         private readonly IItemRepository _itemRepo;
 
         /// <summary>
@@ -25,7 +25,10 @@ namespace Emby.Server.Implementations.Library.Validators
         /// <param name="libraryManager">The library manager.</param>
         /// <param name="logger">The logger.</param>
         /// <param name="itemRepo">The item repository.</param>
-        public ArtistsPostScanTask(ILibraryManager libraryManager, ILogger logger, IItemRepository itemRepo)
+        public ArtistsPostScanTask(
+            ILibraryManager libraryManager,
+            ILogger<ArtistsValidator> logger,
+            IItemRepository itemRepo)
         {
             _libraryManager = libraryManager;
             _logger = logger;

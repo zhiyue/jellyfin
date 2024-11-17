@@ -1,40 +1,35 @@
+#nullable disable
+#pragma warning disable CS1591
+
 using System;
-using System.Runtime.InteropServices;
+using System.Collections.Generic;
+using System.ComponentModel;
 using MediaBrowser.Model.Updates;
 
 namespace MediaBrowser.Model.System
 {
     /// <summary>
-    /// Enum describing the location of the FFmpeg tool.
-    /// </summary>
-    public enum FFmpegLocation
-    {
-        /// <summary>No path to FFmpeg found.</summary>
-        NotFound,
-        /// <summary>Path supplied via command line using switch --ffmpeg.</summary>
-        SetByArgument,
-        /// <summary>User has supplied path via Transcoding UI page.</summary>
-        Custom,
-        /// <summary>FFmpeg tool found on system $PATH.</summary>
-        System
-    };
-
-    /// <summary>
-    /// Class SystemInfo
+    /// Class SystemInfo.
     /// </summary>
     public class SystemInfo : PublicSystemInfo
     {
-        public PackageVersionClass SystemUpdateLevel { get; set; }
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SystemInfo" /> class.
+        /// </summary>
+        public SystemInfo()
+        {
+            CompletedInstallations = Array.Empty<InstallationInfo>();
+        }
 
         /// <summary>
         /// Gets or sets the display name of the operating system.
         /// </summary>
         /// <value>The display name of the operating system.</value>
-        public string OperatingSystemDisplayName { get; set; }
-
+        [Obsolete("This is no longer set")]
+        public string OperatingSystemDisplayName { get; set; } = string.Empty;
 
         /// <summary>
-        /// Get or sets the package name.
+        /// Gets or sets the package name.
         /// </summary>
         /// <value>The value of the '-package' command line argument.</value>
         public string PackageName { get; set; }
@@ -68,10 +63,14 @@ namespace MediaBrowser.Model.System
         /// <summary>
         /// Gets or sets a value indicating whether this instance can self restart.
         /// </summary>
-        /// <value><c>true</c> if this instance can self restart; otherwise, <c>false</c>.</value>
-        public bool CanSelfRestart { get; set; }
+        /// <value><c>true</c>.</value>
+        [Obsolete("This is always true")]
+        [DefaultValue(true)]
+        public bool CanSelfRestart { get; set; } = true;
 
-        public bool CanLaunchWebBrowser { get; set; }
+        [Obsolete("This is always false")]
+        [DefaultValue(false)]
+        public bool CanLaunchWebBrowser { get; set; } = false;
 
         /// <summary>
         /// Gets or sets the program data path.
@@ -116,39 +115,24 @@ namespace MediaBrowser.Model.System
         public string TranscodingTempPath { get; set; }
 
         /// <summary>
-        /// Gets or sets the HTTP server port number.
+        /// Gets or sets the list of cast receiver applications.
         /// </summary>
-        /// <value>The HTTP server port number.</value>
-        public int HttpServerPortNumber { get; set; }
-
-        /// <summary>
-        /// Gets or sets a value indicating whether [enable HTTPS].
-        /// </summary>
-        /// <value><c>true</c> if [enable HTTPS]; otherwise, <c>false</c>.</value>
-        public bool SupportsHttps { get; set; }
-
-        /// <summary>
-        /// Gets or sets the HTTPS server port number.
-        /// </summary>
-        /// <value>The HTTPS server port number.</value>
-        public int HttpsPortNumber { get; set; }
+        public IReadOnlyList<CastReceiverApplication> CastReceiverApplications { get; set; }
 
         /// <summary>
         /// Gets or sets a value indicating whether this instance has update available.
         /// </summary>
         /// <value><c>true</c> if this instance has update available; otherwise, <c>false</c>.</value>
+        [Obsolete("This should be handled by the package manager")]
+        [DefaultValue(false)]
         public bool HasUpdateAvailable { get; set; }
 
-        public FFmpegLocation EncoderLocation { get; set; }
+        [Obsolete("This isn't set correctly anymore")]
+        [DefaultValue("System")]
+        public string EncoderLocation { get; set; } = "System";
 
-        public Architecture SystemArchitecture { get; set; }
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="SystemInfo" /> class.
-        /// </summary>
-        public SystemInfo()
-        {
-            CompletedInstallations = Array.Empty<InstallationInfo>();
-        }
+        [Obsolete("This is no longer set")]
+        [DefaultValue("X64")]
+        public string SystemArchitecture { get; set; } = "X64";
     }
 }

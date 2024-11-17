@@ -1,11 +1,10 @@
 using System.Collections.Generic;
-using System.Globalization;
 using MediaBrowser.Model.Entities;
 
 namespace MediaBrowser.Model.Globalization
 {
     /// <summary>
-    /// Interface ILocalizationManager
+    /// Interface ILocalizationManager.
     /// </summary>
     public interface ILocalizationManager
     {
@@ -31,8 +30,9 @@ namespace MediaBrowser.Model.Globalization
         /// Gets the rating level.
         /// </summary>
         /// <param name="rating">The rating.</param>
+        /// <param name="countryCode">The optional two letter ISO language string.</param>
         /// <returns><see cref="int" /> or <c>null</c>.</returns>
-        int? GetRatingLevel(string rating);
+        int? GetRatingLevel(string rating, string? countryCode = null);
 
         /// <summary>
         /// Gets the localized string.
@@ -56,18 +56,10 @@ namespace MediaBrowser.Model.Globalization
         IEnumerable<LocalizationOption> GetLocalizationOptions();
 
         /// <summary>
-        /// Checks if the string contains a character with the specified unicode category.
-        /// </summary>
-        /// <param name="value">The string.</param>
-        /// <param name="category">The unicode category.</param>
-        /// <returns>Wether or not the string contains a character with the specified unicode category.</returns>
-        bool HasUnicodeCategory(string value, UnicodeCategory category);
-
-        /// <summary>
-        /// Returns the correct <see cref="CultureInfo" /> for the given language.
+        /// Returns the correct <see cref="CultureDto" /> for the given language.
         /// </summary>
         /// <param name="language">The language.</param>
-        /// <returns>The correct <see cref="CultureInfo" /> for the given language.</returns>
-        CultureDto FindLanguageInfo(string language);
+        /// <returns>The correct <see cref="CultureDto" /> for the given language.</returns>
+        CultureDto? FindLanguageInfo(string language);
     }
 }

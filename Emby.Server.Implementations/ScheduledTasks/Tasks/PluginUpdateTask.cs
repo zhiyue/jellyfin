@@ -2,37 +2,61 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common.Updates;
-using MediaBrowser.Model.Net;
+using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
-namespace Emby.Server.Implementations.ScheduledTasks
+namespace Emby.Server.Implementations.ScheduledTasks.Tasks
 {
     /// <summary>
     /// Plugin Update Task.
     /// </summary>
     public class PluginUpdateTask : IScheduledTask, IConfigurableScheduledTask
     {
-        /// <summary>
-        /// The _logger.
-        /// </summary>
-        private readonly ILogger _logger;
+        private readonly ILogger<PluginUpdateTask> _logger;
 
         private readonly IInstallationManager _installationManager;
+        private readonly ILocalizationManager _localization;
 
-        public PluginUpdateTask(ILogger logger, IInstallationManager installationManager)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="PluginUpdateTask" /> class.
+        /// </summary>
+        /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
+        /// <param name="installationManager">Instance of the <see cref="IInstallationManager"/> interface.</param>
+        /// <param name="localization">Instance of the <see cref="ILocalizationManager"/> interface.</param>
+        public PluginUpdateTask(ILogger<PluginUpdateTask> logger, IInstallationManager installationManager, ILocalizationManager localization)
         {
             _logger = logger;
             _installationManager = installationManager;
+            _localization = localization;
         }
 
-        /// <summary>
-        /// Creates the triggers that define when the task will run.
-        /// </summary>
-        /// <returns>IEnumerable{BaseTaskTrigger}.</returns>
+        /// <inheritdoc />
+        public string Name => _localization.GetLocalizedString("TaskUpdatePlugins");
+
+        /// <inheritdoc />
+        public string Description => _localization.GetLocalizedString("TaskUpdatePluginsDescription");
+
+        /// <inheritdoc />
+        public string Category => _localization.GetLocalizedString("TasksApplicationCategory");
+
+        /// <inheritdoc />
+        public string Key => "PluginUpdates";
+
+        /// <inheritdoc />
+        public bool IsHidden => false;
+
+        /// <inheritdoc />
+        public bool IsEnabled => true;
+
+        /// <inheritdoc />
+        public bool IsLogged => true;
+
+        /// <inheritdoc />
         public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
         {
             // At startup
@@ -42,19 +66,13 @@ namespace Emby.Server.Implementations.ScheduledTasks
             yield return new TaskTriggerInfo { Type = TaskTriggerInfo.TriggerInterval, IntervalTicks = TimeSpan.FromHours(24).Ticks };
         }
 
-        /// <summary>
-        /// Update installed plugins.
-        /// </summary>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <param name="progress">The progress.</param>
-        /// <returns><see cref="Task" />.</returns>
-        public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
+        /// <inheritdoc />
+        public async Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
         {
             progress.Report(0);
 
-            var packagesToInstall = await _installationManager.GetAvailablePluginUpdates(cancellationToken)
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
+            var packageFetchTask = _installationManager.GetAvailablePluginUpdates(cancellationToken);
+            var packagesToInstall = (await packageFetchTask.ConfigureAwait(false)).ToList();
 
             progress.Report(10);
 
@@ -76,13 +94,17 @@ namespace Emby.Server.Implementations.ScheduledTasks
                         throw;
                     }
                 }
-                catch (HttpException ex)
+                catch (HttpRequestException ex)
                 {
-                    _logger.LogError(ex, "Error downloading {0}", package.name);
+                    _logger.LogError(ex, "Error downloading {0}", package.Name);
                 }
                 catch (IOException ex)
                 {
-                    _logger.LogError(ex, "Error updating {0}", package.name);
+                    _logger.LogError(ex, "Error updating {0}", package.Name);
+                }
+                catch (InvalidDataException ex)
+                {
+                    _logger.LogError(ex, "Error updating {0}", package.Name);
                 }
 
                 // Update progress
@@ -94,26 +116,5 @@ namespace Emby.Server.Implementations.ScheduledTasks
 
             progress.Report(100);
         }
-
-        /// <inheritdoc />
-        public string Name => "Check for plugin updates";
-
-        /// <inheritdoc />
-        public string Description => "Downloads and installs updates for plugins that are configured to update automatically.";
-
-        /// <inheritdoc />
-        public string Category => "Application";
-
-        /// <inheritdoc />
-        public string Key => "PluginUpdates";
-
-        /// <inheritdoc />
-        public bool IsHidden => false;
-
-        /// <inheritdoc />
-        public bool IsEnabled => true;
-
-        /// <inheritdoc />
-        public bool IsLogged => true;
     }
 }

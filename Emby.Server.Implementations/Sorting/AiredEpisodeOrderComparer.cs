@@ -1,4 +1,7 @@
+#pragma warning disable CS1591
+
 using System;
+using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Sorting;
@@ -9,39 +12,29 @@ namespace Emby.Server.Implementations.Sorting
     public class AiredEpisodeOrderComparer : IBaseItemComparer
     {
         /// <summary>
+        /// Gets the name.
+        /// </summary>
+        /// <value>The name.</value>
+        public ItemSortBy Type => ItemSortBy.AiredEpisodeOrder;
+
+        /// <summary>
         /// Compares the specified x.
         /// </summary>
         /// <param name="x">The x.</param>
         /// <param name="y">The y.</param>
         /// <returns>System.Int32.</returns>
-        public int Compare(BaseItem x, BaseItem y)
+        public int Compare(BaseItem? x, BaseItem? y)
         {
-            if (x == null)
-            {
-                throw new ArgumentNullException(nameof(x));
-            }
+            ArgumentNullException.ThrowIfNull(x);
 
-            if (y == null)
-            {
-                throw new ArgumentNullException(nameof(y));
-            }
-
-            if (x.PremiereDate.HasValue && y.PremiereDate.HasValue)
-            {
-                var val = DateTime.Compare(x.PremiereDate.Value, y.PremiereDate.Value);
-
-                if (val != 0)
-                {
-                    //return val;
-                }
-            }
+            ArgumentNullException.ThrowIfNull(y);
 
             var episode1 = x as Episode;
             var episode2 = y as Episode;
 
-            if (episode1 == null)
+            if (episode1 is null)
             {
-                if (episode2 == null)
+                if (episode2 is null)
                 {
                     return 0;
                 }
@@ -49,7 +42,7 @@ namespace Emby.Server.Implementations.Sorting
                 return 1;
             }
 
-            if (episode2 == null)
+            if (episode2 is null)
             {
                 return -1;
             }
@@ -129,11 +122,11 @@ namespace Emby.Server.Implementations.Sorting
             return GetSpecialCompareValue(x).CompareTo(GetSpecialCompareValue(y));
         }
 
-        private static int GetSpecialCompareValue(Episode item)
+        private static long GetSpecialCompareValue(Episode item)
         {
             // First sort by season number
             // Since there are three sort orders, pad with 9 digits (3 for each, figure 1000 episode buffer should be enough)
-            var val = (item.AirsAfterSeasonNumber ?? item.AirsBeforeSeasonNumber ?? 0) * 1000000000;
+            var val = (item.AirsAfterSeasonNumber ?? item.AirsBeforeSeasonNumber ?? 0) * 1000000000L;
 
             // Second sort order is if it airs after the season
             if (item.AirsAfterSeasonNumber.HasValue)
@@ -152,16 +145,16 @@ namespace Emby.Server.Implementations.Sorting
 
         private static int CompareEpisodes(Episode x, Episode y)
         {
-            var xValue = (x.ParentIndexNumber ?? -1) * 1000 + (x.IndexNumber ?? -1);
-            var yValue = (y.ParentIndexNumber ?? -1) * 1000 + (y.IndexNumber ?? -1);
+            var xValue = ((x.ParentIndexNumber ?? -1) * 1000) + (x.IndexNumber ?? -1);
+            var yValue = ((y.ParentIndexNumber ?? -1) * 1000) + (y.IndexNumber ?? -1);
+            var comparisonResult = xValue.CompareTo(yValue);
+            // If equal, compare premiere dates
+            if (comparisonResult == 0 && x.PremiereDate.HasValue && y.PremiereDate.HasValue)
+            {
+                comparisonResult = DateTime.Compare(x.PremiereDate.Value, y.PremiereDate.Value);
+            }
 
-            return xValue.CompareTo(yValue);
+            return comparisonResult;
         }
-
-        /// <summary>
-        /// Gets the name.
-        /// </summary>
-        /// <value>The name.</value>
-        public string Name => ItemSortBy.AiredEpisodeOrder;
     }
 }

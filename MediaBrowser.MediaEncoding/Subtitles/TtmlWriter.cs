@@ -1,4 +1,3 @@
-using System;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -7,8 +6,15 @@ using MediaBrowser.Model.MediaInfo;
 
 namespace MediaBrowser.MediaEncoding.Subtitles
 {
-    public class TtmlWriter : ISubtitleWriter
+    /// <summary>
+    /// TTML subtitle writer.
+    /// </summary>
+    public partial class TtmlWriter : ISubtitleWriter
     {
+        [GeneratedRegex(@"\\n", RegexOptions.IgnoreCase)]
+        private static partial Regex NewLineEscapeRegex();
+
+        /// <inheritdoc />
         public void Write(SubtitleTrackInfo info, Stream stream, CancellationToken cancellationToken)
         {
             // Example: https://github.com/zmalltalker/ttml2vtt/blob/master/data/sample.xml
@@ -35,11 +41,12 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                 {
                     var text = trackEvent.Text;
 
-                    text = Regex.Replace(text, @"\\n", "<br/>", RegexOptions.IgnoreCase);
+                    text = NewLineEscapeRegex().Replace(text, "<br/>");
 
-                    writer.WriteLine("<p begin=\"{0}\" dur=\"{1}\">{2}</p>",
+                    writer.WriteLine(
+                        "<p begin=\"{0}\" dur=\"{1}\">{2}</p>",
                         trackEvent.StartPositionTicks,
-                        (trackEvent.EndPositionTicks - trackEvent.StartPositionTicks),
+                        trackEvent.EndPositionTicks - trackEvent.StartPositionTicks,
                         text);
                 }
 

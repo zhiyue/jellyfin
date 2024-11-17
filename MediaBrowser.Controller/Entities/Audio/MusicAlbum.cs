@@ -1,34 +1,39 @@
+#nullable disable
+
+#pragma warning disable CA1721, CA1826, CS1591
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Entities;
+using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
-using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.Users;
+using MetadataProvider = MediaBrowser.Model.Entities.MetadataProvider;
 
 namespace MediaBrowser.Controller.Entities.Audio
 {
     /// <summary>
-    /// Class MusicAlbum
+    /// Class MusicAlbum.
     /// </summary>
     public class MusicAlbum : Folder, IHasAlbumArtist, IHasArtist, IHasMusicGenres, IHasLookupInfo<AlbumInfo>, IMetadataContainer
     {
-        /// <inheritdoc />
-        public IReadOnlyList<string> AlbumArtists { get; set; }
-
-        /// <inheritdoc />
-        public IReadOnlyList<string> Artists { get; set; }
-
         public MusicAlbum()
         {
             Artists = Array.Empty<string>();
             AlbumArtists = Array.Empty<string>();
         }
+
+        /// <inheritdoc />
+        public IReadOnlyList<string> AlbumArtists { get; set; }
+
+        /// <inheritdoc />
+        public IReadOnlyList<string> Artists { get; set; }
 
         [JsonIgnore]
         public override bool SupportsAddingToPlaylist => true;
@@ -38,6 +43,25 @@ namespace MediaBrowser.Controller.Entities.Audio
 
         [JsonIgnore]
         public MusicArtist MusicArtist => GetMusicArtist(new DtoOptions(true));
+
+        [JsonIgnore]
+        public override bool SupportsPlayedStatus => false;
+
+        [JsonIgnore]
+        public override bool SupportsCumulativeRunTimeTicks => true;
+
+        [JsonIgnore]
+        public string AlbumArtist => AlbumArtists.FirstOrDefault();
+
+        [JsonIgnore]
+        public override bool SupportsPeople => true;
+
+        /// <summary>
+        /// Gets the tracks.
+        /// </summary>
+        /// <value>The tracks.</value>
+        [JsonIgnore]
+        public IEnumerable<Audio> Tracks => GetRecursiveChildren(i => i is Audio).Cast<Audio>();
 
         public MusicArtist GetMusicArtist(DtoOptions options)
         {
@@ -55,27 +79,9 @@ namespace MediaBrowser.Controller.Entities.Audio
             {
                 return LibraryManager.GetArtist(name, options);
             }
+
             return null;
         }
-
-        [JsonIgnore]
-        public override bool SupportsPlayedStatus => false;
-
-        [JsonIgnore]
-        public override bool SupportsCumulativeRunTimeTicks => true;
-
-        [JsonIgnore]
-        public string AlbumArtist => AlbumArtists.FirstOrDefault();
-
-        [JsonIgnore]
-        public override bool SupportsPeople => false;
-
-        /// <summary>
-        /// Gets the tracks.
-        /// </summary>
-        /// <value>The tracks.</value>
-        [JsonIgnore]
-        public IEnumerable<Audio> Tracks => GetRecursiveChildren(i => i is Audio).Cast<Audio>();
 
         protected override IEnumerable<BaseItem> GetEligibleChildrenForRecursiveChildren(User user)
         {
@@ -97,14 +103,14 @@ namespace MediaBrowser.Controller.Entities.Audio
                 list.Insert(0, albumArtist + "-" + Name);
             }
 
-            var id = this.GetProviderId(MetadataProviders.MusicBrainzAlbum);
+            var id = this.GetProviderId(MetadataProvider.MusicBrainzAlbum);
 
             if (!string.IsNullOrEmpty(id))
             {
                 list.Insert(0, "MusicAlbum-Musicbrainz-" + id);
             }
 
-            id = this.GetProviderId(MetadataProviders.MusicBrainzReleaseGroup);
+            id = this.GetProviderId(MetadataProvider.MusicBrainzReleaseGroup);
 
             if (!string.IsNullOrEmpty(id))
             {
@@ -114,9 +120,9 @@ namespace MediaBrowser.Controller.Entities.Audio
             return list;
         }
 
-        protected override bool GetBlockUnratedValue(UserPolicy config)
+        protected override bool GetBlockUnratedValue(User user)
         {
-            return config.BlockUnratedItems.Contains(UnratedItem.Music);
+            return user.GetPreferenceValues<UnratedItem>(PreferenceKind.BlockUnratedItems).Contains(UnratedItem.Music);
         }
 
         public override UnratedItem GetBlockUnratedType()
@@ -132,7 +138,7 @@ namespace MediaBrowser.Controller.Entities.Audio
 
             var artist = GetMusicArtist(new DtoOptions(false));
 
-            if (artist != null)
+            if (artist is not null)
             {
                 id.ArtistProviderIds = artist.ProviderIds;
             }
@@ -163,7 +169,6 @@ namespace MediaBrowser.Controller.Entities.Audio
 
             var childUpdateType = ItemUpdateType.None;
 
-            // Refresh songs
             foreach (var item in items)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -180,8 +185,10 @@ namespace MediaBrowser.Controller.Entities.Audio
             var parentRefreshOptions = refreshOptions;
             if (childUpdateType > ItemUpdateType.None)
             {
-                parentRefreshOptions = new MetadataRefreshOptions(refreshOptions);
-                parentRefreshOptions.MetadataRefreshMode = MetadataRefreshMode.FullRefresh;
+                parentRefreshOptions = new MetadataRefreshOptions(refreshOptions)
+                {
+                    MetadataRefreshMode = MetadataRefreshMode.FullRefresh
+                };
             }
 
             // Refresh current item

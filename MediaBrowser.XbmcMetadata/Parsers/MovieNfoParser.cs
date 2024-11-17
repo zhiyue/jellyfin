@@ -5,16 +5,36 @@ using System.Xml;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
+using MediaBrowser.Controller.Extensions;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace MediaBrowser.XbmcMetadata.Parsers
 {
+    /// <summary>
+    /// Nfo parser for movies.
+    /// </summary>
     public class MovieNfoParser : BaseNfoParser<Video>
     {
-        public MovieNfoParser(ILogger logger, IConfigurationManager config, IProviderManager providerManager)
-            : base(logger, config, providerManager)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="MovieNfoParser"/> class.
+        /// </summary>
+        /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
+        /// <param name="config">Instance of the <see cref="IConfigurationManager"/> interface.</param>
+        /// <param name="providerManager">Instance of the <see cref="IProviderManager"/> interface.</param>
+        /// <param name="userManager">Instance of the <see cref="IUserManager"/> interface.</param>
+        /// <param name="userDataManager">Instance of the <see cref="IUserDataManager"/> interface.</param>
+        /// <param name="directoryService">Instance of the <see cref="DirectoryService"/> interface.</param>
+        public MovieNfoParser(
+            ILogger logger,
+            IConfigurationManager config,
+            IProviderManager providerManager,
+            IUserManager userManager,
+            IUserDataManager userDataManager,
+            IDirectoryService directoryService)
+            : base(logger, config, providerManager, userManager, userDataManager, directoryService)
         {
         }
 
@@ -30,42 +50,40 @@ namespace MediaBrowser.XbmcMetadata.Parsers
             {
                 case "id":
                     {
-                        string imdbId = reader.GetAttribute("IMDB");
-                        string tmdbId = reader.GetAttribute("TMDB");
+                        // get ids from attributes
+                        string? imdbId = reader.GetAttribute("IMDB");
+                        string? tmdbId = reader.GetAttribute("TMDB");
 
-                        if (string.IsNullOrWhiteSpace(imdbId))
+                        // read id from content
+                        var contentId = reader.ReadElementContentAsString();
+                        if (contentId.Contains("tt", StringComparison.Ordinal) && string.IsNullOrEmpty(imdbId))
                         {
-                            imdbId = reader.ReadElementContentAsString();
+                            imdbId = contentId;
+                        }
+                        else if (string.IsNullOrEmpty(tmdbId))
+                        {
+                            tmdbId = contentId;
                         }
 
-                        if (!string.IsNullOrWhiteSpace(imdbId))
-                        {
-                            item.SetProviderId(MetadataProviders.Imdb, imdbId);
-                        }
-
-                        if (!string.IsNullOrWhiteSpace(tmdbId))
-                        {
-                            item.SetProviderId(MetadataProviders.Tmdb, tmdbId);
-                        }
+                        item.TrySetProviderId(MetadataProvider.Imdb, imdbId);
+                        item.TrySetProviderId(MetadataProvider.Tmdb, tmdbId);
 
                         break;
                     }
+
                 case "set":
                     {
                         var movie = item as Movie;
 
                         var tmdbcolid = reader.GetAttribute("tmdbcolid");
-                        if (!string.IsNullOrWhiteSpace(tmdbcolid) && movie != null)
-                        {
-                            movie.SetProviderId(MetadataProviders.TmdbCollection, tmdbcolid);
-                        }
+                        movie?.TrySetProviderId(MetadataProvider.TmdbCollection, tmdbcolid);
 
                         var val = reader.ReadInnerXml();
 
-                        if (!string.IsNullOrWhiteSpace(val) && movie != null)
+                        if (!string.IsNullOrWhiteSpace(val) && movie is not null)
                         {
                             // TODO Handle this better later
-                            if (val.IndexOf('<') == -1)
+                            if (!val.Contains('<', StringComparison.Ordinal))
                             {
                                 movie.CollectionName = val;
                             }
@@ -86,31 +104,21 @@ namespace MediaBrowser.XbmcMetadata.Parsers
                     }
 
                 case "artist":
+                    var artist = reader.ReadNormalizedString();
+                    if (!string.IsNullOrEmpty(artist) && item is MusicVideo artistVideo)
                     {
-                        var val = reader.ReadElementContentAsString();
-
-                        if (!string.IsNullOrWhiteSpace(val) && item is MusicVideo movie)
-                        {
-                            var list = movie.Artists.ToList();
-                            list.Add(val);
-                            movie.Artists = list.ToArray();
-                        }
-
-                        break;
+                        artistVideo.Artists = [..artistVideo.Artists, artist];
                     }
 
+                    break;
                 case "album":
+                    var album = reader.ReadNormalizedString();
+                    if (!string.IsNullOrEmpty(album) && item is MusicVideo albumVideo)
                     {
-                        var val = reader.ReadElementContentAsString();
-
-                        if (!string.IsNullOrWhiteSpace(val) && item is MusicVideo movie)
-                        {
-                            movie.Album = val;
-                        }
-
-                        break;
+                        albumVideo.Album = album;
                     }
 
+                    break;
                 default:
                     base.FetchDataFromXmlNode(reader, itemResult);
                     break;
@@ -119,9 +127,6 @@ namespace MediaBrowser.XbmcMetadata.Parsers
 
         private void ParseSetXml(string xml, Movie movie)
         {
-            //xml = xml.Substring(xml.IndexOf('<'));
-            //xml = xml.Substring(0, xml.LastIndexOf('>'));
-
             // These are not going to be valid xml so no sense in causing the provider to fail and spamming the log with exceptions
             try
             {
@@ -155,7 +160,6 @@ namespace MediaBrowser.XbmcMetadata.Parsers
             }
             catch (XmlException)
             {
-
             }
         }
     }

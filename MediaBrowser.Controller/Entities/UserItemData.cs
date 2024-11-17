@@ -1,31 +1,30 @@
+#pragma warning disable CS1591
+
 using System;
 using System.Text.Json.Serialization;
 
 namespace MediaBrowser.Controller.Entities
 {
     /// <summary>
-    /// Class UserItemData
+    /// Class UserItemData.
     /// </summary>
     public class UserItemData
     {
+        public const double MinLikeValue = 6.5;
+
         /// <summary>
-        /// Gets or sets the user id.
+        /// The _rating.
         /// </summary>
-        /// <value>The user id.</value>
-        public Guid UserId { get; set; }
+        private double? _rating;
 
         /// <summary>
         /// Gets or sets the key.
         /// </summary>
         /// <value>The key.</value>
-        public string Key { get; set; }
+        public required string Key { get; set; }
 
         /// <summary>
-        /// The _rating
-        /// </summary>
-        private double? _rating;
-        /// <summary>
-        /// Gets or sets the users 0-10 rating
+        /// Gets or sets the users 0-10 rating.
         /// </summary>
         /// <value>The rating.</value>
         /// <exception cref="ArgumentOutOfRangeException">Rating;A 0 to 10 rating is required for UserItemData.</exception>
@@ -75,21 +74,21 @@ namespace MediaBrowser.Controller.Entities
         /// </summary>
         /// <value><c>true</c> if played; otherwise, <c>false</c>.</value>
         public bool Played { get; set; }
+
         /// <summary>
         /// Gets or sets the index of the audio stream.
         /// </summary>
         /// <value>The index of the audio stream.</value>
         public int? AudioStreamIndex { get; set; }
+
         /// <summary>
         /// Gets or sets the index of the subtitle stream.
         /// </summary>
         /// <value>The index of the subtitle stream.</value>
         public int? SubtitleStreamIndex { get; set; }
 
-        public const double MinLikeValue = 6.5;
-
         /// <summary>
-        /// This is an interpreted property to indicate likes or dislikes
+        /// Gets or sets a value indicating whether the item is liked or not.
         /// This should never be serialized.
         /// </summary>
         /// <value><c>null</c> if [likes] contains no value, <c>true</c> if [likes]; otherwise, <c>false</c>.</value>
@@ -98,13 +97,14 @@ namespace MediaBrowser.Controller.Entities
         {
             get
             {
-                if (Rating != null)
+                if (Rating is not null)
                 {
                     return Rating >= MinLikeValue;
                 }
 
                 return null;
             }
+
             set
             {
                 if (value.HasValue)
